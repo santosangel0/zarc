@@ -1,0 +1,8 @@
+*.tmp
+.env
+.venv/
+*.tif
+dados/
+limbo/
+artigos/
+QGIS/
