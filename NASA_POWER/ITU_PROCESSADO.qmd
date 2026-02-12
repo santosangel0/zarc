@@ -1,0 +1,264 @@
+---
+title: "Calibração e Processamento do ITU - NASA POWER"
+format: html
+editor: source
+jupyter: python3
+execute:
+  warning: false
+  message: false
+---
+
+## Introdução
+
+Este relatório descreve o processamento e calibração dos dados do Índice de Temperatura e Umidade (ITU) para o estado de Goiás. O objetivo é preencher as falhas nas séries temporais das estações do INMET utilizando dados estimados pela API NASA POWER, ajustados por regressão linear.
+
+A calibração é realizada individualmente para cada estação meteorológica, correlacionando os dados observados (INMET) com os dados estimados (NASA POWER) para os dias em que ambos estão disponíveis.
+
+## Metodologia
+
+O preenchimento de falhas segue a seguinte lógica:
+
+1.  Se o dado observado pelo INMET ($ITU_{INMET}$) estiver disponível, ele é mantido.
+2.  Se o dado do INMET estiver ausente, ele é estimado utilizando a equação de regressão linear ajustada para aquela estação específica:
+
+$$
+ITU_{Estimado} = \beta_0 + \beta_1 \cdot ITU_{NASA}
+$$
+
+Onde:
+- $\beta_0$ é o intercepto da regressão.
+- $\beta_1$ é o coeficiente angular (slope) da regressão.
+- $ITU_{NASA}$ é o valor obtido da API NASA POWER.
+
+Foram ajustados dois modelos distintos para cada estação: um para o **ITU Médio Diário** e outro para o **ITU Máximo Diário**.
+
+## Carregamento e Preparação dos Dados
+
+```{python}
+import pandas as pd
+import numpy as np
+import os
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+from math import sqrt
+
+# Caminhos dos arquivos
+INPUT_FILE = "../dados/itu_bruto/itu_nasa_inmet_diario_bruto.csv"
+OUTPUT_FILE = "../dados/itu_processado/itu_diario_processado.csv"
+OUTPUT_METRICS = "../dados/itu_processado/metricas_calibracao.csv"
+
+# Garantir diretório de saída
+os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+
+# Carregar dados brutos
+try:
+    df = pd.read_csv(INPUT_FILE)
+    df['data'] = pd.to_datetime(df['data'])
+    print(f"Dados carregados com sucesso. Total de registros: {len(df)}")
+except FileNotFoundError:
+    print(f"ERRO: Arquivo de entrada não encontrado: {INPUT_FILE}")
+    raise
+```
+
+## Calibração e Ajuste Linear
+
+Abaixo, realizamos o ajuste da regressão linear para cada estação e calculamos as métricas de qualidade ($R^2$, RMSE, Beta0, Beta1) e a contagem de pontos utilizados no ajuste.
+
+```{python}
+# Lista para armazenar métricas
+metricas_list = []
+
+# Lista de estações únicas
+estacoes = df['CD_ESTACAO'].unique()
+
+print(f"Total de estações para processar: {len(estacoes)}")
+
+# Dataframe para salvar os dados processados (cópia do original)
+df_proc = df.copy()
+
+# Colunas para armazenar os valores finais (Observed ou Estimated)
+df_proc['ITU_MED_FINAL'] = np.nan
+df_proc['ITU_MAX_FINAL'] = np.nan
+df_proc['FONTE_ITU_MED'] = 'INMET' # Default, muda para 'NASA_AJUSTADO' se preenchido
+df_proc['FONTE_ITU_MAX'] = 'INMET'
+
+# Loop por estação
+for estacao in estacoes:
+    # Filtrar dados da estação
+    mask_estacao = df['CD_ESTACAO'] == estacao
+    df_estacao = df[mask_estacao].copy()
+    
+    # --- ITU MÉDIO ---
+    # Filtrar dados válidos para calibração (tem INMET e NASA)
+    df_calib_med = df_estacao.dropna(subset=['ITU_MED_INMET', 'ITU_MED_NASA'])
+    
+    if len(df_calib_med) > 10: # Critério mínimo de pontos para ajustar
+        X = df_calib_med[['ITU_MED_NASA']].values
+        y = df_calib_med['ITU_MED_INMET'].values
+        
+        model_med = LinearRegression()
+        model_med.fit(X, y)
+        
+        y_pred = model_med.predict(X)
+        
+        # Métricas
+        r2 = r2_score(y, y_pred)
+        rmse = sqrt(mean_squared_error(y, y_pred))
+        b0 = model_med.intercept_
+        b1 = model_med.coef_[0]
+        n_points = len(df_calib_med)
+        
+        metricas_list.append({
+            'Estacao': estacao,
+            'Tipo_ITU': 'Médio',
+            'R2': r2,
+            'Intercepto': b0,
+            'Slope': b1,
+            'RMSE': rmse,
+            'N_Pontos': n_points
+        })
+        
+        # Preenchimento de falhas no DataFrame Principal
+        # Onde INMET é NaN e NASA não é NaN
+        mask_fill = (df_proc['CD_ESTACAO'] == estacao) & (df_proc['ITU_MED_INMET'].isna()) & (df_proc['ITU_MED_NASA'].notna())
+        
+        if mask_fill.any():
+            X_fill = df_proc.loc[mask_fill, ['ITU_MED_NASA']].values
+            if len(X_fill) > 0:
+                itu_estimado = model_med.predict(X_fill)
+                df_proc.loc[mask_fill, 'ITU_MED_FINAL'] = itu_estimado
+                df_proc.loc[mask_fill, 'FONTE_ITU_MED'] = 'NASA_AJUSTADO'
+                
+    else:
+        # Sem dados suficientes para calibrar
+        metricas_list.append({
+            'Estacao': estacao,
+            'Tipo_ITU': 'Médio',
+            'R2': np.nan, 'Intercepto': np.nan, 'Slope': np.nan, 'RMSE': np.nan, 'N_Pontos': len(df_calib_med)
+        })
+
+    # Copiar INMET existente para Final (sobrescreve o estimado se existir inmet, mas aqui estamos preenchendo apenas ond nao tem)
+    # A lógica acima preencheu apenas onde INMET era NaN. Agora garantimos que onde INMET existe, vai para FINAL
+    mask_inmet_exists = (df_proc['CD_ESTACAO'] == estacao) & (df_proc['ITU_MED_INMET'].notna())
+    df_proc.loc[mask_inmet_exists, 'ITU_MED_FINAL'] = df_proc.loc[mask_inmet_exists, 'ITU_MED_INMET']
+
+
+    # --- ITU MÁXIMO ---
+    # Filtrar dados válidos para calibração
+    df_calib_max = df_estacao.dropna(subset=['ITU_MAX_INMET', 'ITU_MAX_NASA'])
+    
+    if len(df_calib_max) > 10:
+        X = df_calib_max[['ITU_MAX_NASA']].values
+        y = df_calib_max['ITU_MAX_INMET'].values
+        
+        model_max = LinearRegression()
+        model_max.fit(X, y)
+        
+        y_pred = model_max.predict(X)
+        
+        # Métricas
+        r2 = r2_score(y, y_pred)
+        rmse = sqrt(mean_squared_error(y, y_pred))
+        b0 = model_max.intercept_
+        b1 = model_max.coef_[0]
+        n_points = len(df_calib_max)
+        
+        metricas_list.append({
+            'Estacao': estacao,
+            'Tipo_ITU': 'Máximo',
+            'R2': r2,
+            'Intercepto': b0,
+            'Slope': b1,
+            'RMSE': rmse,
+            'N_Pontos': n_points
+        })
+        
+        # Preenchimento de falhas
+        mask_fill = (df_proc['CD_ESTACAO'] == estacao) & (df_proc['ITU_MAX_INMET'].isna()) & (df_proc['ITU_MAX_NASA'].notna())
+        
+        if mask_fill.any():
+            X_fill = df_proc.loc[mask_fill, ['ITU_MAX_NASA']].values
+            if len(X_fill) > 0:
+                itu_estimado = model_max.predict(X_fill)
+                df_proc.loc[mask_fill, 'ITU_MAX_FINAL'] = itu_estimado
+                df_proc.loc[mask_fill, 'FONTE_ITU_MAX'] = 'NASA_AJUSTADO'
+                
+    else:
+        metricas_list.append({
+            'Estacao': estacao,
+            'Tipo_ITU': 'Máximo',
+            'R2': np.nan, 'Intercepto': np.nan, 'Slope': np.nan, 'RMSE': np.nan, 'N_Pontos': len(df_calib_max)
+        })
+
+    # Copiar INMET existente para Final
+    mask_inmet_exists_max = (df_proc['CD_ESTACAO'] == estacao) & (df_proc['ITU_MAX_INMET'].notna())
+    df_proc.loc[mask_inmet_exists_max, 'ITU_MAX_FINAL'] = df_proc.loc[mask_inmet_exists_max, 'ITU_MAX_INMET']
+
+# Criar DataFrame de métricas
+df_metricas = pd.DataFrame(metricas_list)
+
+# Salvar Arquivos
+df_proc.to_csv(OUTPUT_FILE, index=False)
+df_metricas.to_csv(OUTPUT_METRICS, index=False)
+
+print("Processamento concluído.")
+```
+
+## Análise dos Resultados da Calibração
+
+### Métricas por Estação
+
+A tabela abaixo apresenta os parâmetros da regressão linear para cada estação e variável.
+
+```{python}
+from IPython.display import display, Markdown
+
+# Exibir tabela formatada (primeiras 20 linhas se for muito grande)
+# Arredondando para visualização
+df_show = df_metricas.copy()
+cols_float = ['R2', 'Intercepto', 'Slope', 'RMSE']
+for col in cols_float:
+    df_show[col] = df_show[col].round(4)
+
+display(Markdown("### Tabela de Métricas de Calibração (Amostra)"))
+display(df_show.head(20))
+```
+
+### Resumo Metodológico (Média Geral)
+
+Abaixo, apresentamos a média geral dos parâmetros de ajuste, servindo como referência para a eficácia metodológica do preenchimento de falhas.
+
+```{python}
+resumo_geral = df_metricas.groupby('Tipo_ITU')[['R2', 'Intercepto', 'Slope', 'RMSE', 'N_Pontos']].mean().reset_index()
+
+display(Markdown("### Média Geral dos Parâmetros de Ajuste"))
+display(resumo_geral.round(4))
+```
+
+### Visualização de Cobertura Final
+
+Proporção de dados originais (INMET) vs. dados estimados (NASA Ajustado).
+
+```{python}
+total_linhas = len(df_proc)
+
+# ITU Médio
+n_inmet = len(df_proc[df_proc['FONTE_ITU_MED'] == 'INMET'])
+n_nasa = len(df_proc[df_proc['FONTE_ITU_MED'] == 'NASA_AJUSTADO'])
+n_falha = df_proc['ITU_MED_FINAL'].isna().sum()
+
+print("--- Cobertura ITU Médio ---")
+print(f"Original (INMET): {n_inmet} ({n_inmet/total_linhas:.1%})")
+print(f"Estimado (NASA):  {n_nasa} ({n_nasa/total_linhas:.1%})")
+print(f"Sem Dados:        {n_falha} ({n_falha/total_linhas:.1%})")
+
+# ITU Máximo
+n_inmet_max = len(df_proc[df_proc['FONTE_ITU_MAX'] == 'INMET'])
+n_nasa_max = len(df_proc[df_proc['FONTE_ITU_MAX'] == 'NASA_AJUSTADO'])
+n_falha_max = df_proc['ITU_MAX_FINAL'].isna().sum()
+
+print("\n--- Cobertura ITU Máximo ---")
+print(f"Original (INMET): {n_inmet_max} ({n_inmet_max/total_linhas:.1%})")
+print(f"Estimado (NASA):  {n_nasa_max} ({n_nasa_max/total_linhas:.1%})")
+print(f"Sem Dados:        {n_falha_max} ({n_falha_max/total_linhas:.1%})")
+```
