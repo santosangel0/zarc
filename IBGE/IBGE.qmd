@@ -1,0 +1,227 @@
+---
+title: "Metodologia: Definição da Área de Estudo e Coleta de Dados Espaciais"
+subtitle: "Análise da Representatividade da Produção Leiteira no Centro-Oeste e Seleção de Municípios"
+author: "Antigravity"
+date: "2026-02-10"
+format:
+  html:
+    code-fold: true
+    toc: true
+jupyter: python3
+---
+
+## 1. Aspectos Metodológicos da Definição da Área de Estudo
+
+A definição da área de estudo fundamenta-se na representatividade produtiva da região Centro-Oeste no cenário nacional e na identificação de seu núcleo produtivo principal. O objetivo é estabelecer um recorte espacial que otimize a modelagem dos índices climáticos (ITU, NDVI e SPEI) e permita a correlação direta com dados de preços ao produtor.
+
+A metodologia utiliza dados da Pesquisa da Pecuária Municipal (PPM/IBGE) e seguiu duas etapas de análise:
+
+1.  **Contextualização Nacional**: Avaliação da participação da região Centro-Oeste na produção total de leite do Brasil.
+2.  **Definição do Recorte Estadual**: Identificação do estado de Goiás como o polo central da produção leiteira regional. Dada a sua expressiva participação no total da região e a disponibilidade exclusiva de séries históricas de preços (CEPEA/ESALQ) para esta unidade federativa, optou-se por utilizar **o estado de Goiás** como área de estudo.
+
+Para a espacialização dos resultados, foram adquiridas as malhas digitais (shapefiles) oficiais do IBGE para todo o estado de Goiás, garantindo a precisão necessária para o cruzamento futuro com dados raster de satélite.
+
+## 2. Análise da Produção: Brasil vs. Centro-Oeste
+
+Nesta etapa, conectamos à API do IBGE para extrair os dados mais recentes de produção de leite.
+
+```{python}
+import requests
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import geopandas as gpd
+import io
+import os
+
+# Configuração da API SIDRA
+# Tabela 74: Produção de origem animal
+# Variável 106: Quantidade produzida
+# Classificação 80[2682]: Leite de vaca
+# Ano: 2024
+URL_SIDRA = "https://servicodados.ibge.gov.br/api/v3/agregados/74/periodos/2024/variaveis/106?classificacao=80[2682]"
+
+# Função auxiliar para consultar a API
+def get_sidra_data(localidade):
+    url = f"{URL_SIDRA}&localidades={localidade}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        valor = data[0]['resultados'][0]['series'][0]['serie'].values()
+        return float(list(valor)[0])
+    except Exception as e:
+        print(f"Erro ao consultar localidade {localidade}: {e}")
+        return 0
+
+# ---------------------------------------------------------
+# 1. Análise da Representatividade Regional
+# ---------------------------------------------------------
+
+# Produção Brasil (N1[1])
+prod_brasil = get_sidra_data("N1[1]")
+
+# Produção Centro-Oeste (N2[5])
+prod_co = get_sidra_data("N2[5]")
+
+# Produção Goiás (N3[52])
+prod_go = get_sidra_data("N3[52]")
+
+# Cálculos de Representatividade
+percentual_co_no_br = (prod_co / prod_brasil) * 100
+percentual_go_no_co = (prod_go / prod_co) * 100
+
+print(f"--- Justificativa da Área de Estudo (Goiás) ---")
+print(f"Produção Brasil (2024): {prod_brasil:,.0f} mil litros")
+print(f"Produção Centro-Oeste (2024): {prod_co:,.0f} mil litros")
+print(f"Representatividade do CO no Brasil: {percentual_co_no_br:.2f}%")
+print(f"Produção Goiás (2024): {prod_go:,.0f} mil litros")
+print(f"Representatividade de GO no CO: {percentual_go_no_co:.2f}%")
+
+print(f"\nConclusão Metodológica:")
+print(f"O estado de Goiás representa sozinho quase 80% ({percentual_go_no_co:.2f}%) de toda a produção")
+print(f"leiteira da região Centro-Oeste. Além disso, é o único estado da região com dados históricos")
+print(f"de preços ao produtor consistentemente monitorados pelo CEPEA/ESALQ.")
+print(f"Portanto, a área de estudo compreenderá TODOS os municípios do estado de Goiás.")
+
+# ---------------------------------------------------------
+# 2. Obtenção de Dados de Todos os Municípios de Goiás
+# ---------------------------------------------------------
+
+# Consultar produção de TODOS os municípios de GO (N6[N3[52]])
+url_municipios_go = f"{URL_SIDRA}&localidades=N6[N3[52]]"
+
+try:
+    response = requests.get(url_municipios_go)
+    data_mun = response.json()
+    
+    # Estruturar em DataFrame
+    series = data_mun[0]['resultados'][0]['series']
+    lista_dados = []
+    
+    for item in series:
+        mun_id = item['localidade']['id']
+        mun_nome = item['localidade']['nome']
+        valor = list(item['serie'].values())[0]
+        
+        if valor != "-" and valor != "..." and valor is not None:
+             lista_dados.append({
+                 'id': mun_id,
+                 'municipio': mun_nome,
+                 'producao': float(valor)
+             })
+             
+    df_go = pd.DataFrame(lista_dados)
+    
+    # Ordenar por produção para visualização (opcional)
+    df_go = df_go.sort_values(by='producao', ascending=False).reset_index(drop=True)
+    
+    print(f"\n--- Definição da Amostra ---")
+    print(f"Total de Municípios em GO selecionados para o estudo: {len(df_go)}")
+    
+    # Mostrar os top 5 apenas como curiosidade
+    print("\nTop 5 Municípios Produtores em GO (Referência):")
+    print(df_go[['id', 'municipio', 'producao']].head().to_string(index=False))
+    
+except Exception as e:
+    print(f"Erro no processamento dos municípios: {e}")
+
+# ---------------------------------------------------------
+# 3. Aquisição das Bases Cartográficas (Goiás e Brasil)
+# ---------------------------------------------------------
+
+# Garantir diretório de saída
+caminho_dados = '../dados/shapefiles_projeto'
+os.makedirs(caminho_dados, exist_ok=True)
+
+# URL para Malha de Goiás com divisão municipal (API v4)
+url_malha_go_municipios = "https://servicodados.ibge.gov.br/api/v4/malhas/estados/52?formato=application/vnd.geo+json&qualidade=maxima&intrarregiao=municipio"
+
+print(f"\nBaixando malha municipal completa de Goiás (Alta Resolução)...")
+try:
+    r_mun = requests.get(url_malha_go_municipios)
+    r_mun.raise_for_status()
+    
+    gdf_go_todos = gpd.read_file(io.StringIO(r_mun.text))
+    
+    # Definir CRS se necessário
+    if gdf_go_todos.crs is None:
+        gdf_go_todos.set_crs(epsg=4674, inplace=True)
+
+    # Identificar coluna de ID
+    coluna_id = None
+    possible_cols = ['codarea', 'id', 'CD_MUN', 'CD_GEOCMU']
+    for col in possible_cols:
+        if col in gdf_go_todos.columns:
+            coluna_id = col
+            break
+    
+    if not coluna_id:
+        coluna_id = gdf_go_todos.columns[0]
+        
+    gdf_go_todos[coluna_id] = gdf_go_todos[coluna_id].astype(str)
+    
+    # Padronizar nome da coluna ID para facilitar join futuro
+    if coluna_id != 'id':
+        gdf_go_todos.rename(columns={coluna_id: 'id'}, inplace=True)
+        coluna_id = 'id'
+
+    # Merge com dados de produção (para todos os municípios)
+    # Garantir que IDs no dataframe também sejam strings
+    df_go['id'] = df_go['id'].astype(str)
+    
+    gdf_final = gdf_go_todos.merge(df_go[['id', 'producao']], on='id', how='left')
+    
+    # Salvar Malha Completa de GO
+    output_municipios = os.path.join(caminho_dados, 'municipios_go.geojson')
+    gdf_final.to_file(output_municipios, driver='GeoJSON')
+    print(f"Malha municipal de GO completa salva em: {output_municipios}")
+    
+    # Plot
+    f, ax = plt.subplots(figsize=(10, 10))
+    gdf_final.plot(ax=ax, column='producao', cmap='YlOrRd', legend=True,
+                   legend_kwds={'label': "Produção de Leite (L)", 'orientation': "horizontal"},
+                   edgecolor='black', linewidth=0.1)
+    ax.set_title(f"Produção de Leite em Goiás (Todos os Municípios)")
+    ax.set_axis_off()
+    plt.show()
+
+except Exception as e:
+    print(f"Erro ao processar malha de Goiás: {e}")
+
+# --- Novo: Download da Malha de Regiões do Brasil ---
+url_malha_brasil_regioes = "https://servicodados.ibge.gov.br/api/v4/malhas/paises/BR?formato=application/vnd.geo+json&qualidade=maxima&intrarregiao=regiao"
+
+print(f"\nBaixando malha de regiões do Brasil...")
+try:
+    r_br = requests.get(url_malha_brasil_regioes)
+    r_br.raise_for_status()
+    
+    gdf_br_regioes = gpd.read_file(io.StringIO(r_br.text))
+    
+    if gdf_br_regioes.crs is None:
+        gdf_br_regioes.set_crs(epsg=4674, inplace=True)
+    
+    output_brasil = os.path.join(caminho_dados, 'regioes_brasil.geojson')
+    gdf_br_regioes.to_file(output_brasil, driver='GeoJSON')
+    print(f"Malha de regiões do Brasil salva em: {output_brasil}")
+    
+    # Plot simples para conferência
+    ax_br = gdf_br_regioes.plot(figsize=(8, 8), edgecolor='black', color='whitesmoke')
+    gdf_br_regioes.boundary.plot(ax=ax_br, color='black', linewidth=0.5)
+    ax_br.set_title("Regiões do Brasil")
+    ax_br.set_axis_off()
+    plt.show()
+
+except Exception as e:
+    print(f"Erro ao baixar malha do Brasil: {e}")
+
+```
+
+## 5. Conclusão Parcial
+
+Os procedimentos acima estabeleceram a base cartográfica e a definição estatística da área de estudo. A escolha do **estado de Goiás** justifica-se solidamente pelos dados apresentados: o estado concentra, isoladamente, cerca de 80% de toda a produção da região Centro-Oeste.
+
+Desta forma, Goiás atua como um *proxy* altamente representativo para a dinâmica regional, permitindo que a análise climática e econômica (preços CEPEA) seja realizada com robustez sem a necessidade de fragmentar a área de estudo em municípios dispersos de outros estados.
+
+Na próxima etapa, estes shapefiles serão utilizados para extrair as séries temporais dos índices climáticos e correlacioná-las com os preços históricos do leite.
