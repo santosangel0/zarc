@@ -1,7 +1,7 @@
 ---
 title: "Disponibilidade e Metodologia ITU - INMET Goiás"
 format: html
-editor: visual
+editor: source
 jupyter: python3
 execute:
   warning: false
@@ -120,16 +120,11 @@ $$
 \text{ITU} = 0.8 \cdot \text{Tbs} + \text{UR} \cdot (\text{Tbs} - 14.3)/100 + 46.3
 $$
 
-Onde:
-- **Tbs**: Temperatura de bulbo seco (°C)
-- **UR**: Umidade Relativa (%)
+Onde: - **Tbs**: Temperatura de bulbo seco (°C) - **UR**: Umidade Relativa (%)
 
-**Critérios de Qualidade:**
-- Temperaturas fora do intervalo **[-10°C, 50°C]** são transformadas em `NaN`.
-- Umidades fora do intervalo **[0%, 100%]** são transformadas em `NaN`.
+**Critérios de Qualidade:** - Temperaturas fora do intervalo **\[-10°C, 50°C\]** são transformadas em `NaN`. - Umidades fora do intervalo **\[0%, 100%\]** são transformadas em `NaN`.
 
-**Preenchimento:**
-O dataset final contém uma entrada para **todos os dias** de 01/01/2004 a 31/12/2024 para cada estação listada, mesmo que a estação não estivesse operando (neste caso, os valores serão `NaN`).
+**Preenchimento:** O dataset final contém uma entrada para **todos os dias** de 01/01/2004 a 31/12/2024 para cada estação listada, mesmo que a estação não estivesse operando (neste caso, os valores serão `NaN`).
 
 ```{python}
 # Função para baixar dados de uma estação (com token se disponível)

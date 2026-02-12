@@ -1,7 +1,6 @@
 ---
 title: "CEPEA: Metodologia e Processamento da Série Histórica do Leite (Goiás)"
 subtitle: "Harmonização de Referências Temporais e Tratamento de Dados (2004-Presente)"
-author: "Antigravity"
 date: "2026-02-12"
 format:
   html:

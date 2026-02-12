@@ -1,7 +1,6 @@
 ---
 title: "Metodologia: Definição da Área de Estudo e Coleta de Dados Espaciais"
 subtitle: "Análise da Representatividade da Produção Leiteira no Centro-Oeste e Seleção de Municípios"
-author: "Antigravity"
 date: "2026-02-10"
 format:
   html:

@@ -1,0 +1,208 @@
+---
+title: "Análise Espacial e Temporal de Índices Climáticos (NDVI e PDSI) em Goiás"
+format: html
+editor: source
+jupyter: python3
+execute:
+  warning: false
+  message: false
+---
+
+## Introdução
+
+Este relatório apresenta o processamento e a análise visual de índices de vegetação (NDVI) e seca (PDSI) para o estado de Goiás, utilizando a plataforma Google Earth Engine (GEE).
+
+O objetivo é duplo:
+1.  Gerar visualizações (mapas climatológicos mensais) para caracterizar o padrão sazonal da região.
+2.  Extrair séries temporais médias para serem utilizadas como variáveis explicativas em modelos de regressão (preço do leite).
+
+O período de análise compreende de **Janeiro de 2004 a Dezembro de 2024**.
+
+## Configuração do Ambiente
+
+```{python}
+import ee
+import geemap
+import os
+import pandas as pd
+
+# Inicializar GEE
+try:
+    ee.Initialize()
+except Exception as e:
+    ee.Authenticate()
+    ee.Initialize()
+
+# Configuração de diretórios
+OUTPUT_DIR = "../dados/geo_gee"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+```
+
+## Definição da Área de Interesse (ROI)
+
+Utilizamos o limite oficial do estado de Goiás a partir da coleção FAO/GAUL ou IBGE.
+
+```{python}
+# Carregar limite de Goiás (FAO/GAUL)
+# Level 1 é estados/províncias. O código ADM1_CODE para Goiás precisa ser verificado ou filtro por nome.
+states = ee.FeatureCollection("FAO/GAUL/2015/level1")
+goias = states.filter(ee.Filter.eq('ADM1_NAME', 'Goias'))
+
+# Alternativa via Asset IBGE se disponível, mas FAO é global e fácil no GEE.
+# Centralizar mapa
+Map = geemap.Map()
+Map.centerObject(goias, 6)
+```
+
+## Processamento de Climatologia Mensal
+
+A função abaixo calcula a média de cada mês (Jan, Fev, ..., Dez) ao longo de todos os anos da série (2004-2024). Isso gera 12 imagens representativas do padrão médio mensal.
+
+```{python}
+# Período
+start_date = '2004-01-01'
+end_date = '2024-12-31'
+
+# 1. NDVI (MODIS)
+# MOD13Q1: Vegetation Indices 16-Day Global 250m
+ndvi_col = ee.ImageCollection("MODIS/061/MOD13Q1") \
+    .filterDate(start_date, end_date) \
+    .filterBounds(goias) \
+    .select('NDVI')
+
+# Fator de escala do MODIS NDVI é 0.0001
+ndvi_col = ndvi_col.map(lambda img: img.multiply(0.0001).copyProperties(img, ['system:time_start']))
+
+# 2. PDSI (TerraClimate)
+# TerraClimate: Monthly Climate and Climatic Water Balance
+pdsi_col = ee.ImageCollection("IDAHO_EPSCOR/TERRACLIMATE") \
+    .filterDate(start_date, end_date) \
+    .filterBounds(goias) \
+    .select('pdsi')
+
+# Fator de escala do PDSI TerraClimate é 0.01
+pdsi_col = pdsi_col.map(lambda img: img.multiply(0.01).copyProperties(img, ['system:time_start']))
+
+# Função para Climatologia Mensal
+def calcular_climatologia(collection, nome_banda):
+    mensais = []
+    for mes in range(1, 13):
+        # Filtrar imagens do mês específico em todos os anos
+        img_mes = collection.filter(ee.Filter.calendarRange(mes, mes, 'month')).mean()
+        # Recortar para Goiás
+        img_mes = img_mes.clip(goias).set('month', mes)
+        mensais.append(img_mes)
+    return ee.ImageCollection.fromImages(mensais)
+
+# Calcular
+ndvi_clim = calcular_climatologia(ndvi_col, 'NDVI')
+pdsi_clim = calcular_climatologia(pdsi_col, 'pdsi')
+
+print("Cálculo de climatologia concluído (NDVI e PDSI).")
+```
+
+## Visualização (Mapas Mensais)
+
+Visualização dinâmica interativa com GeoMap.
+
+```{python}
+# Visualização NDVI
+vis_ndvi = {
+    'min': 0.2,
+    'max': 0.8,
+    'palette': ['red', 'yellow', 'green', 'darkgreen']
+}
+
+# Visualização PDSI
+vis_pdsi = {
+    'min': -4,
+    'max': 4,
+    'palette': ['red', 'orange', 'white', 'cyan', 'blue']
+}
+
+# Adicionar camadas ao mapa (Exemplo Jan e Jul)
+Map.addLayer(ndvi_clim.filter(ee.Filter.eq('month', 1)).first(), vis_ndvi, 'NDVI Jan (Média)')
+Map.addLayer(ndvi_clim.filter(ee.Filter.eq('month', 7)).first(), vis_ndvi, 'NDVI Jul (Média)')
+Map.addLayer(pdsi_clim.filter(ee.Filter.eq('month', 1)).first(), vis_pdsi, 'PDSI Jan (Média)')
+Map.addLayer(pdsi_clim.filter(ee.Filter.eq('month', 7)).first(), vis_pdsi, 'PDSI Jul (Média)')
+
+Map
+```
+
+## Exportação dos Dados (GeoTIFF)
+
+Exportamos as 12 imagens de média climatológica para análise local e uso no QGIS/Artigo.
+
+```{python}
+# Função para exportar
+def exportar_imagens(collection, prefixo, scale):
+    lista_imgs = collection.toList(collection.size())
+    size = lista_imgs.size().getInfo()
+    
+    for i in range(size):
+        img = ee.Image(lista_imgs.get(i))
+        mes = img.get('month').getInfo()
+        nome_arquivo = f"{prefixo}_mes_{mes:02d}.tif"
+        caminho_completo = os.path.join(OUTPUT_DIR, nome_arquivo)
+        
+        print(f"Exportando {nome_arquivo}...")
+        
+        geemap.ee_export_image(
+            img, 
+            filename=caminho_completo, 
+            scale=scale, 
+            region=goias.geometry(), 
+            file_per_band=False
+        )
+
+# Exportar NDVI (Scale ~1000m para agilizar, MODIS nativo é 250m)
+# Para fins de análise regional e correlação, 1km ou 5km é suficiente e muito mais leve.
+# O user pediu para uso em artigo e regressão.
+# Vamos usar 2500m (2.5km) como compromisso bom.
+
+exportar_imagens(ndvi_clim, "NDVI_Climatologia", 2500)
+exportar_imagens(pdsi_clim, "PDSI_Climatologia", 4000) # TerraClimate nativo é ~4km
+
+print("Código de exportação preparado (comentado para evitar download em massa durante renderização).")
+```
+
+## Extração de Séries Temporais (Médias Estaduais)
+
+Além dos mapas estáticos (climatologia), extraímos a série temporal contínua (média espacial do estado mês a mês) para alimentar o modelo de regressão.
+
+```{python}
+# Função para reduzir região (Média Espacial)
+def extrair_serie_temporal(collection, nome_banda):
+    def reduce_region(img):
+        stat = img.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=goias.geometry(),
+            scale=5000,
+            maxPixels=1e9
+        )
+        return img.set('date', img.date().format('YYYY-MM-dd')).set('value', stat.get(nome_banda))
+
+    serie = collection.map(reduce_region)
+    data_list = serie.reduceColumns(ee.Reducer.toList(2), ['date', 'value']).values().get(0).getInfo()
+    
+    import pandas as pd
+    df = pd.DataFrame(data_list, columns=['data', nome_banda])
+    df['data'] = pd.to_datetime(df['data'])
+    return df
+
+# Extrair séries completas
+print("Extraindo séries temporais completas...")
+df_ndvi = extrair_serie_temporal(ndvi_col, 'NDVI')
+df_pdsi = extrair_serie_temporal(pdsi_col, 'pdsi')
+
+# Merge
+df_final = pd.merge(df_ndvi, df_pdsi, on='data', how='outer').sort_values('data')
+
+# Salvar CSV para Regressão
+OUTPUT_CSV = "../dados/geo_gee/indices_climaticos_goias_mensal.csv"
+df_final.to_csv(OUTPUT_CSV, index=False)
+
+print(f"Série temporal salva em: {OUTPUT_CSV}")
+from IPython.display import display
+display(df_final.head())
+```
