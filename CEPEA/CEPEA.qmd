@@ -1,0 +1,139 @@
+---
+title: "CEPEA: Metodologia e Processamento da Série Histórica do Leite (Goiás)"
+subtitle: "Harmonização de Referências Temporais e Tratamento de Dados (2004-Presente)"
+author: "Antigravity"
+date: "2026-02-12"
+format:
+  html:
+    code-fold: true
+    toc: true
+jupyter: python3
+---
+
+## 1. Contexto e Objetivo
+
+O objetivo deste documento é processar os dados brutos de preços de leite pagos ao produtor fornecidos pelo CEPEA/ESALQ, gerando uma série histórica contínua e consistente para o estado de Goiás. 
+
+A série histórica do CEPEA (iniciada em 2004) sofreu uma importante alteração metodológica em **Janeiro de 2023** referente à nomenclatura da data de referência. Para análises climáticas (Ex: ZARC), é crucial que o preço do leite esteja alinhado com o mês em que ele foi **produzido (captado)**, e não com o mês em que foi pago (o que ocorre tradicionalmente no mês seguinte).
+
+## 2. Metodologia de Harmonização Temporal
+
+Conforme detalhado no arquivo `info_metodologia.qmd`, aplicamos as seguintes regras de conversão para uniformizar a série temporal pela **Data de Captação**:
+
+### Regra 1: Período "Antiga Metodologia" (2004 a Dez/2022)
+*   **Contexto**: O CEPEA divulgava o preço referenciando o **Mês do Pagamento**.
+*   **Realidade**: O pagamento ocorre no mês seguinte à produção.
+*   **Ação**: `Data de Captação = Data Divulgada (Mês de Pagamento) - 1 Mês`.
+    *   *Exemplo*: Dado "Dezembro/2022" refere-se ao leite captado em **Novembro/2022**.
+
+### Regra 2: Período "Nova Metodologia" (Jan/2023 em diante)
+*   **Contexto**: O CEPEA passou a referenciar o dado pelo **Mês de Captação**.
+*   **Realidade**: A data divulgada já corresponde à produção.
+*   **Ação**: `Data de Captação = Data Divulgada`.
+    *   *Exemplo*: Dado "Janeiro/2023" refere-se ao leite captado em **Janeiro/2023**.
+
+## 3. A Questão do "Gap" de Dezembro de 2022
+
+Devido à sobreposição das regras de transição nos arquivos brutos, identificamos uma lacuna (gap) na série processada:
+*   O dado bruto "DEZ/2022" foi processado pela Regra 1 -> Captação **NOV/2022**.
+*   O dado bruto "JAN/2023" foi processado pela Regra 2 -> Captação **JAN/2023**.
+*   **Resultado**: O mês de Captação **DEZ/2022** não possui um correspondente direto no arquivo bruto consolidado, pois sua entrada teórica ("JAN/2023" na regra antiga ou "DEZ/2022" na regra nova) colide com as entradas existentes.
+
+*Observação*: Optamos por manter a lacuna na série processada para preservar a integridade dos dados originais, em vez de realizar uma interpolação artificial neste momento.
+
+## 4. Código de Processamento
+
+O script abaixo lê o arquivo bruto, filtra para o estado de Goiás (GO), aplica as regras de conversão temporal e exporta o resultado.
+
+```{python}
+import pandas as pd
+import numpy as np
+import os
+
+# ---------------------------------------------------------
+# Configuração de Caminhos
+# ---------------------------------------------------------
+input_file = '../dados/leite_cepea_bruto/leite_cepea_bruto.csv'
+output_dir = '../dados/leite_cepea_processado'
+output_file = os.path.join(output_dir, 'leite_cepea_goias_mensal.csv')
+
+os.makedirs(output_dir, exist_ok=True)
+
+# ---------------------------------------------------------
+# Leitura e Filtragem
+# ---------------------------------------------------------
+# O arquivo bruto possui cabeçalho na linha 4 (índice 3)
+try:
+    df = pd.read_csv(input_file, header=3)
+except FileNotFoundError:
+    print(f"Erro: Arquivo não encontrado em {input_file}")
+    raise
+
+# Dicionário de meses
+mes_map = {
+    'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6,
+    'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12
+}
+
+# Filtrar Goiás
+df_go = df[df['Estado'] == 'GO'].copy()
+
+# Criar Data de Referência (Original)
+def parse_mes(m):
+    return mes_map.get(str(m).upper(), 0)
+
+df_go['Mes_Num'] = df_go['Mes'].apply(parse_mes)
+df_go['Data_Referencia'] = pd.to_datetime(
+    df_go[['Ano', 'Mes_Num']].assign(day=1).rename(columns={'Ano': 'year', 'Mes_Num': 'month'})
+)
+
+# ---------------------------------------------------------
+# Aplicação das Regras de Negócio
+# ---------------------------------------------------------
+def ajustar_data_captacao(row):
+    data_ref = row['Data_Referencia']
+    
+    # Transição: Até 2022 (inclusive) deduzir 1 mês. A partir de 2023 manter.
+    if data_ref.year < 2023:
+        return data_ref - pd.DateOffset(months=1)
+    else:
+        return data_ref
+
+df_go['Data_Captacao'] = df_go.apply(ajustar_data_captacao, axis=1)
+
+# Seleção e Ordenação final
+df_final = df_go[['Data_Captacao', 'Preco_Medio']].copy()
+df_final['ano_captacao'] = df_final['Data_Captacao'].dt.year
+df_final['mes_captacao'] = df_final['Data_Captacao'].dt.month
+df_final = df_final.sort_values(by='Data_Captacao').reset_index(drop=True)
+
+# ---------------------------------------------------------
+# Validação e Exportação
+# ---------------------------------------------------------
+print(f"Série Processada para Goiás (Total: {len(df_final)} registros)")
+print(f"Início da Série: {df_final['Data_Captacao'].min().strftime('%m/%Y')}")
+print(f"Fim da Série:    {df_final['Data_Captacao'].max().strftime('%m/%Y')}")
+
+# Verificar lacunas
+range_full = pd.date_range(
+    start=df_final['Data_Captacao'].min(), 
+    end=df_final['Data_Captacao'].max(), 
+    freq='MS'
+)
+datas_presentes = set(df_final['Data_Captacao'])
+lacunas = [d for d in range_full if d not in datas_presentes]
+
+if lacunas:
+    print("\n[ALERTA] Lacunas identificadas na série temporal (Meses faltantes):")
+    for d in lacunas:
+        print(f" - {d.strftime('%m/%Y')}")
+    print("Nota: A lacuna em 12/2022 é esperada devido à transição metodológica.")
+
+# Salvar
+df_final.to_csv(output_file, index=False)
+print(f"\nArquivo exportado com sucesso para: {output_file}")
+```
+
+## 5. Conclusão da Etapa
+
+Com este processamento, geramos o arquivo `leite_cepea_goias_mensal.csv` contendo a série de preços líquidos reais recebidos pelo produtor em Goiás, devidamente indexada pelo mês de produção. Este arquivo servirá como variável dependente (target) nas análises de correlação com índices climáticos (ITU, NDVI, etc.).

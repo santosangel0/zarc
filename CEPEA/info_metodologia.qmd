@@ -1,0 +1,47 @@
+Ajustes metodológicos na pesquisa do preço do leite cru do Cepea garantem evolução conjunta com cadeia leiteira
+A Equipe do Cepea monitora a cadeia do leite desde 1986 e calcula indicadores de preços líquidos ao produtor desde 2004. Ao longo destas décadas, o mercado passou por várias transformações, que se refletiram em desafios para o Cepea. Mas o Centro de Pesquisas acompanhou tais evoluções, por meio de ajustes metodológicos, buscando sempre garantir a transparência da informação divulgada.
+
+ 
+
+Nas principais bacias leiteiras do Brasil acompanhadas pelo Cepea, o fornecimento do leite cru ao laticínio é diário, mas o pagamento ao produtor é realizado mensalmente e sempre no mês subsequente ao da captação. Por isso, no início de cada mês, o Cepea consulta cooperativas, indústrias e produtores para saber qual foi o valor pago pelo leite cru captado no mês anterior.
+
+ 
+
+De 2004 a 2018, os preços médios calculados pelo Cepea se pautaram pela coleta – via telefone – de informações agregadas dos volumes e dos valores negociados. Assim, os preços mesorregionais eram ponderados por seus respectivos volumes (este, portanto, coletado com o colaborador) para gerar médias mesorregionais, ao passo que as médias estaduais e a “Média Brasil” eram ponderadas pelos volumes indicados na Pesquisa Pecuária Municipal (PPM) e na Pesquisa Trimestral do Leite (PTL), respectivamente, ambas do IBGE. Ainda, até 2018, o Cepea divulgava os preços brutos e líquidos médios, mínimos e máximos – sempre adotando o mês de pagamento como referência para nomear a informação divulgada. Nesse sentido, um preço chamado de “agosto” se referia ao valor recebido em agosto pelo leite que foi captado em julho (a metodologia utilizada pela pesquisa do Cepea de 2004 a 2018 pode ser acessada aqui).
+
+ 
+
+Procurando sempre o aprimoramento de suas informações, a partir de 2019 o Cepea passou a visar a obtenção de dados mais desagregados, ou seja, relacionados à negociação individual. Então, com o apoio financeiro e a parceria dos associados da Organização das Cooperativas Brasileiras (OCB) e da Viva Lácteos (Associação Brasileira de Laticínios), a partir de 2019, o Cepea adotou uma nova metodologia de cálculo do preço do leite ao produtor, na qual a forma de coleta de dados passou a ser realizada de modo desagregado, considerando o volume e preço de cada negociação entre produtores e laticínios. Essa coleta desagregada permite ao Cepea calcular as médias de preços de forma padronizada entre os colaboradores e agregar os dados em estratos de produção. Além disso, os cálculos das médias estaduais e da “Média Brasil” deixaram de basear-se na ponderação através de dados do IBGE e passaram a ser feitos com base no volume coletado diretamente pelo Cepea.
+
+ 
+
+Também em 2019 as definições de preços mínimos e máximos foram padronizadas: os valores médios do menor estrato de produção passaram a considerar apenas os dados de produtores com captação diária menor que 200 litros de leite por dia; e, os do maior estrato de produção, aqueles com captação diária maior que 2.000 litros de leite por dia. Além disso, encerrou-se a série histórica de preços brutos e a divulgação passou a ser apenas do preço líquido, que não inclui frete e nem impostos (veja mais informações sobre essa alteração aqui).
+
+ 
+
+Em setembro de 2022, uma nova atualização foi realizada na metodologia, quando foi inserida uma nova etapa no tratamento da amostra. Visando a controlar efeitos de concentração de mercado, ficou definido  que, na formação da média de cada estrato, nenhuma empresa poderia ter um peso maior do que um terço do volume total da respectiva mesorregião. Isso é operacionalizado mediante reponderação do volume redistribuindo o eventual excedente acima de um terço de forma proporcional entre os demais agentes (com base e seus volumes). A reponderação do volume é, portanto, uma regra condicionada à presença da concentração da amostra: alguma empresa com mais de um terço do volume coletado, quando então seu volume é ajustado para um terço – não sendo aplicada em situações em que não há necessidade. É um tratamento de amostragem que eleva a segurança das empresas em compartilhar dados, tendo em vista que a concentração da amostra culmina em exposição da estratégia de precificação das empresas que possuírem maior volume na pesquisa. Com isso, aumenta-se a probabilidade de manter a divulgação das médias pelo Cepea.
+
+ 
+
+A partir de setembro de 2022, visando a estreitar sua interação com seus colaboradores, o Cepea passou a publicar apenas as médias estaduais e a “Média Brasil”. Preços médios de estratos de produção específicos e os preços mesorregionais passaram a ser exclusivos para a rede de colaboradores do Cepea. A metodologia utilizada pela pesquisa do Cepea de 2019 a 2022 pode ser acessada aqui.
+
+ 
+
+Finalmente, havia uma antiga reivindicação do setor leiteiro por maior clareza quanto ao período de referência da pesquisa do Cepea. A identificação dos preços do leite ao produtor pelo período de pagamento fazia com que sempre se divulgasse um dado com o mesmo nome do mês em questão. Entretanto esse pagamento se referia à captação realizada no mês anterior. Essa forma de nomear o preço não deixava claro que a pesquisa do Cepea se baseia em informações de negócios já efetuados – abrindo espaço para interpretações de que o Centro de Pesquisa estaria estimando um preço de referência para ser pago por entregas no mês subsequente.
+
+ 
+
+Por esse motivo, o Cepea, a partir de janeiro de 2023, faz um novo ajuste, mas apenas na nomenclatura do preço do leite cru. No lugar de nomear a informação de acordo com o mês em que houve pagamento (como vem sendo feito desde 2004), o Cepea passará a adotar o mês de captação do leite cru como referência para nomear os dados divulgados. É importante ressaltar que essa mudança se refere apenas à nomenclatura do dado, não ao processo de coleta de informações e cálculo das médias. A metodologia utilizada pela pesquisa do Cepea a partir de 2023 pode ser acessada aqui. 
+
+ 
+
+Como exemplo: na Média Brasil líquida, a informação nomeada "dezembro/22", que foi de R$ 2,5286/litro, se referia ao preço recebido pelos produtores em dezembro/22 pelo leite que foi captado em novembro/22. Com o ajuste a ser realizado em 2023, a referência para nomear o dado passa a ser o mês da captação (independentemente do mês em que o produtor recebe o pagamento), de modo que essa mesma informação (de R$ 2,5286/litro) será identificada como "novembro/22".
+
+ 
+
+Adotar o mês de captação como referência para nomear o preço do leite é importante para facilitar a compreensão do panorama do mercado, diminuir a assimetria de informação e contribuir para o processo de tomada de decisão dos agentes do setor. Com essa mudança, será possível sincronizar as nomenclaturas de preços e custos, tornando mais simples aos pecuaristas e laticínios avaliar a rentabilidade da atividade.
+
+ 
+
+Dessa forma, o Cepea busca cumprir sua missão, que é contribuir com o agronegócio para o bem-estar da sociedade brasileira por meio da produção de conhecimento de base científica e da divulgação de informações relevantes que auxiliem agentes em tomada de decisão. Revisar a metodologia e adequá-la à pesquisa à evolução do mercado é tarefa permanente para que o Cepea possa continuar acompanhando o mercado e atuando como um importante difusor de informação na cadeia do leite. Ainda assim, é preciso destacar que é a confiança e a participação dos agentes da cadeia, por meio do apoio financeiro das organizações setoriais e pela adesão voluntária das empresas à rede de colaboradores do Cepea, que tornam possível ao Centro de Pesquisa registrar a memória do setor e divulgar as séries históricas de preços.
+
