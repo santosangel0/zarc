@@ -1,0 +1,334 @@
+---
+title: "Disponibilidade e Metodologia ITU - INMET Goiás"
+format: html
+editor: visual
+jupyter: python3
+execute:
+  warning: false
+  message: false
+---
+
+## Introdução
+
+Este relatório descreve a disponibilidade de dados das Estações Meteorológicas Automáticas do INMET no estado de Goiás e detalha a metodologia utilizada para o cálculo do Índice de Temperatura e Umidade (ITU).
+
+O período de análise compreende de **01 de Janeiro de 2004** a **31 de Dezembro de 2024**.
+
+## Configuração Inicial
+
+Configuração do ambiente e carregamento de bibliotecas e variáveis de ambiente (Token INMET).
+
+```{python}
+import os
+import requests
+import pandas as pd
+import geopandas as gpd
+import numpy as np
+from shapely.geometry import Point
+from datetime import datetime, date
+from dotenv import load_dotenv
+import time
+
+# Carregar variáveis de ambiente (Token INMET)
+# Procura .env na raiz do projeto (ajuste o caminho se necessário)
+load_dotenv("../.env")
+INMET_TOKEN = os.getenv("INMET_TOKEN")
+
+# Configurar diretórios
+os.makedirs("../dados/estacoes_inmet", exist_ok=True)
+os.makedirs("../dados/itu_bruto", exist_ok=True)
+
+ARQUIVO_HISTORICO = "../dados/estacoes_inmet/estacoes_historicas.csv"
+ARQUIVO_DADOS_BRUTOS = "../dados/itu_bruto/itu_inmet_diario_bruto.csv"
+
+# Função auxiliar para salvar incrementalmente
+def append_to_csv(df, filepath):
+    if not os.path.isfile(filepath):
+        df.to_csv(filepath, index=False)
+    else:
+        df.to_csv(filepath, mode='a', header=False, index=False)
+```
+
+## Obtenção e Filtragem das Estações
+
+Para identificar as estações localizadas em Goiás, utilizamos a API de Malhas do IBGE para obter o limite territorial do estado e a API do INMET para listar todas as estações automáticas do Brasil. Cruzamos geograficamente essas informações para filtrar apenas as estações inseridas no polígono de Goiás.
+
+```{python}
+# 1. Obter malha de Goiás (IBGE)
+url_malha_go = "https://servicodados.ibge.gov.br/api/v4/malhas/estados/52?formato=application/vnd.geo+json&qualidade=maxima"
+
+try:
+    # Tentar ler o arquivo de estações se já existir para economizar tempo
+    if os.path.exists(ARQUIVO_HISTORICO):
+        print("Carregando lista de estações existente...")
+        tabela_estacoes = pd.read_csv(ARQUIVO_HISTORICO)
+    else:
+        print("Obtendo malha e lista de estações...")
+        # Obter Malha
+        response_malha = requests.get(url_malha_go)
+        goias_geojson = response_malha.json()
+        features = goias_geojson['features'] if 'features' in goias_geojson else [goias_geojson]
+        goias_gdf = gpd.GeoDataFrame.from_features(features)
+        goias_gdf.set_crs(epsg=4674, inplace=True) # SIRGAS 2000
+
+        # Obter Estações INMET
+        url_estacoes = "https://apitempo.inmet.gov.br/estacoes/T"
+        response_estacoes = requests.get(url_estacoes)
+        estacoes_data = response_estacoes.json()
+        df_estacoes = pd.DataFrame(estacoes_data)
+        
+        # Limpar e converter coordenadas
+        df_estacoes = df_estacoes.dropna(subset=['VL_LATITUDE', 'VL_LONGITUDE'])
+        df_estacoes['VL_LATITUDE'] = pd.to_numeric(df_estacoes['VL_LATITUDE'], errors='coerce')
+        df_estacoes['VL_LONGITUDE'] = pd.to_numeric(df_estacoes['VL_LONGITUDE'], errors='coerce')
+        df_estacoes = df_estacoes.dropna(subset=['VL_LATITUDE', 'VL_LONGITUDE'])
+
+        # Criar GeoDataFrame
+        geometry = [Point(xy) for xy in zip(df_estacoes.VL_LONGITUDE, df_estacoes.VL_LATITUDE)]
+        estacoes_gdf = gpd.GeoDataFrame(df_estacoes, geometry=geometry)
+        estacoes_gdf.set_crs(epsg=4674, inplace=True)
+        
+        # Garantir CRS compatível
+        if goias_gdf.crs != estacoes_gdf.crs:
+            goias_gdf = goias_gdf.to_crs(estacoes_gdf.crs)
+            
+        # Join Espacial
+        estacoes_go = gpd.sjoin(estacoes_gdf, goias_gdf, how="inner", predicate="intersects")
+        
+        # Selecionar e Salvar
+        tabela_estacoes = estacoes_go[['CD_ESTACAO', 'DC_NOME', 'VL_LATITUDE', 'VL_LONGITUDE']].copy()
+        tabela_estacoes.to_csv(ARQUIVO_HISTORICO, index=False)
+    
+    # Exibir Tabela
+    from IPython.display import display, Markdown
+    display(Markdown("### Tabela 2: Estações Meteorológicas Automáticas do INMET em Goiás (Histórico)"))
+    display(tabela_estacoes[['CD_ESTACAO', 'VL_LATITUDE', 'VL_LONGITUDE']])
+
+except Exception as e:
+    print(f"Erro na etapa de filtragem de estações: {e}")
+```
+
+## Coleta e Processamento dos Dados Meteorológicos
+
+Abaixo, realizamos a coleta dos dados diários para cada estação identificada no período de 2004 a 2024. A coleta é feita ano a ano para garantir robustez.
+
+### Metodologia de Cálculo
+
+O ITU é calculado segundo **Buffington (1977)**:
+
+$$
+\text{ITU} = 0.8 \cdot \text{Tbs} + \text{UR} \cdot (\text{Tbs} - 14.3)/100 + 46.3
+$$
+
+Onde:
+- **Tbs**: Temperatura de bulbo seco (°C)
+- **UR**: Umidade Relativa (%)
+
+**Critérios de Qualidade:**
+- Temperaturas fora do intervalo **[-10°C, 50°C]** são transformadas em `NaN`.
+- Umidades fora do intervalo **[0%, 100%]** são transformadas em `NaN`.
+
+**Preenchimento:**
+O dataset final contém uma entrada para **todos os dias** de 01/01/2004 a 31/12/2024 para cada estação listada, mesmo que a estação não estivesse operando (neste caso, os valores serão `NaN`).
+
+```{python}
+# Função para baixar dados de uma estação (com token se disponível)
+def baixar_dados_estacao_ano(cod_estacao, ano, token=None):
+    data_ini = f"{ano}-01-01"
+    data_fim = f"{ano}-12-31"
+    
+    if token:
+        # Rota autenticada (parece ser mais estável/permissiva)
+        url = f"https://apitempo.inmet.gov.br/token/estacao/diaria/{data_ini}/{data_fim}/{cod_estacao}/{token}"
+    else:
+        # Rota pública
+        url = f"https://apitempo.inmet.gov.br/estacao/diaria/{data_ini}/{data_fim}/{cod_estacao}"
+    
+    try:
+        resp = requests.get(url, timeout=120) 
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            print(f"Erro HTTP {resp.status_code} ao baixar {cod_estacao}/{ano}")
+    except Exception as e:
+        print(f"Erro de conexão ao baixar dados da estação {cod_estacao} ({ano}): {e}")
+    return None
+
+# Verificar o que já foi processado lendo apenas as colunas chave do CSV se existir
+dados_existentes_set = set()
+if os.path.exists(ARQUIVO_DADOS_BRUTOS):
+    print("Verificando dados já processados...")
+    # Ler em chunks para não estourar memória se for muito grande
+    try:
+        for chunk in pd.read_csv(ARQUIVO_DADOS_BRUTOS, usecols=['CD_ESTACAO', 'data'], chunksize=50000):
+            chunk['ano'] = pd.to_datetime(chunk['data']).dt.year
+            # Criar conjunto de tuplas (estacao, ano)
+            existentes = set(zip(chunk['CD_ESTACAO'], chunk['ano']))
+            dados_existentes_set.update(existentes)
+    except Exception as e:
+        print(f"Erro ao ler arquivo existente: {e}. Iniciando do zero.")
+        dados_existentes_set = set()
+
+print(f"Registros de {len(dados_existentes_set)} pares (estação, ano) já encontrados.")
+
+# Loop Principal
+anos = range(2004, 2025)
+total_estacoes = len(tabela_estacoes)
+
+for idx, row in tabela_estacoes.iterrows():
+    cod = row['CD_ESTACAO']
+    lat = row['VL_LATITUDE']
+    lon = row['VL_LONGITUDE']
+    
+    # print(f"Verificando estação {cod} ({idx+1}/{total_estacoes})...")
+    
+    for ano in anos:
+        if (cod, ano) in dados_existentes_set:
+            continue # Já processado
+        
+        # Baixar dados
+        dados_raw = baixar_dados_estacao_ano(cod, ano, INMET_TOKEN)
+        
+        # Preparar DataFrame Base com TODAS as datas do ano
+        datas_ano = pd.date_range(start=f"{ano}-01-01", end=f"{ano}-12-31", freq='D')
+        df_base = pd.DataFrame({'data': datas_ano})
+        df_base['CD_ESTACAO'] = cod
+        df_base['VL_LATITUDE'] = lat
+        df_base['VL_LONGITUDE'] = lon
+        
+        # Se houve retorno de dados da API
+        if dados_raw:
+            df_api = pd.DataFrame(dados_raw)
+            
+            # Normalizar colunas e tipos
+            if 'DT_MEDICAO' in df_api.columns:
+                df_api['data'] = pd.to_datetime(df_api['DT_MEDICAO'], errors='coerce')
+                
+                # Selecionar colunas numéricas relevantes
+                cols_map = {
+                    'TEMP_MED': 'TEMP_MED_INMET',
+                    'TEMP_MAX': 'TEMP_MAX_INMET',
+                    'UMID_MED': 'UMID_MED_INMET',
+                    'UMID_MIN': 'UMID_MIN_INMET'
+                }
+                
+                for col_api, col_target in cols_map.items():
+                    if col_api in df_api.columns:
+                        df_api[col_target] = pd.to_numeric(df_api[col_api], errors='coerce')
+                    else:
+                        df_api[col_target] = np.nan
+                
+                # Merge com a base de datas (Left Join para manter todos os dias)
+                df_merged = pd.merge(df_base, df_api[['data', 'TEMP_MED_INMET', 'TEMP_MAX_INMET', 'UMID_MED_INMET', 'UMID_MIN_INMET']], on='data', how='left')
+            else:
+                 # API retornou algo estranho ou vazio estruturado
+                 df_merged = df_base
+                 for col in ['TEMP_MED_INMET', 'TEMP_MAX_INMET', 'UMID_MED_INMET', 'UMID_MIN_INMET']:
+                     df_merged[col] = np.nan
+        else:
+            # Sem dados retornados (estação não operava ou erro), preencher com NaNs
+            df_merged = df_base
+            for col in ['TEMP_MED_INMET', 'TEMP_MAX_INMET', 'UMID_MED_INMET', 'UMID_MIN_INMET']:
+                df_merged[col] = np.nan
+
+        # --- Filtros de Qualidade e Cálculo ITU ---
+        
+        # Filtros (Transformar invalido em NaN)
+        df_merged.loc[(df_merged['TEMP_MED_INMET'] < -10) | (df_merged['TEMP_MED_INMET'] > 50), 'TEMP_MED_INMET'] = np.nan
+        df_merged.loc[(df_merged['TEMP_MAX_INMET'] < -10) | (df_merged['TEMP_MAX_INMET'] > 50), 'TEMP_MAX_INMET'] = np.nan
+        df_merged.loc[(df_merged['UMID_MED_INMET'] < 0) | (df_merged['UMID_MED_INMET'] > 100), 'UMID_MED_INMET'] = np.nan
+        df_merged.loc[(df_merged['UMID_MIN_INMET'] < 0) | (df_merged['UMID_MIN_INMET'] > 100), 'UMID_MIN_INMET'] = np.nan
+        
+        # ITU
+        df_merged['ITU_MED_INMET'] = 0.8 * df_merged['TEMP_MED_INMET'] + (df_merged['UMID_MED_INMET'] * (df_merged['TEMP_MED_INMET'] - 14.3))/100 + 46.3
+        df_merged['ITU_MAX_INMET'] = 0.8 * df_merged['TEMP_MAX_INMET'] + (df_merged['UMID_MIN_INMET'] * (df_merged['TEMP_MAX_INMET'] - 14.3))/100 + 46.3
+        
+        # Colunas NASA (Vazias)
+        df_merged['T2M_NASA'] = np.nan
+        df_merged['T2M_MAX_NASA'] = np.nan
+        df_merged['RH2M_NASA'] = np.nan
+        df_merged['ITU_MED_NASA'] = np.nan
+        df_merged['ITU_MAX_NASA'] = np.nan
+        
+        # Ordem das Colunas
+        colunas_finais = [
+            "data", "CD_ESTACAO", "VL_LATITUDE", "VL_LONGITUDE",
+            "TEMP_MED_INMET", "TEMP_MAX_INMET", "UMID_MED_INMET", "UMID_MIN_INMET",
+            "ITU_MED_INMET", "ITU_MAX_INMET",
+            "T2M_NASA", "T2M_MAX_NASA", "RH2M_NASA", "ITU_MED_NASA", "ITU_MAX_NASA"
+        ]
+        
+        df_final_chunk = df_merged[colunas_finais]
+        
+        # Append no arquivo CSV
+        append_to_csv(df_final_chunk, ARQUIVO_DADOS_BRUTOS)
+        
+        # Pequeno delay para não bombardear API
+        time.sleep(0.1)
+
+print("Processamento concluído.")
+
+```
+
+## Resumo dos Dados Coletados
+
+Abaixo apresentamos a quantidade de estações automáticas ativas (com dados de ITU calculáveis) por ano.
+
+```{python}
+if os.path.exists(ARQUIVO_DADOS_BRUTOS):
+    # Ler CSV para resumo (pode ser pesado, ler apenas colunas necessárias)
+    # Para o resumo, precisamos saber se ITU é null ou não
+    resumo_list = []
+    
+    # Processar em chunks para gerar o resumo sem carregar tudo na RAM
+    for chunk in pd.read_csv(ARQUIVO_DADOS_BRUTOS, usecols=['data', 'CD_ESTACAO', 'ITU_MED_INMET', 'ITU_MAX_INMET'], chunksize=100000):
+        chunk = chunk.dropna(subset=['ITU_MED_INMET', 'ITU_MAX_INMET'], how='all')
+        if not chunk.empty:
+            chunk['ano'] = pd.to_datetime(chunk['data']).dt.year
+            resumo_temp = chunk.groupby('ano')['CD_ESTACAO'].nunique().reset_index()
+            resumo_list.append(resumo_temp)
+            
+    if resumo_list:
+        df_resumo_full = pd.concat(resumo_list)
+        # Consolidar chunks
+        resumo_final = df_resumo_full.groupby('ano')['CD_ESTACAO'].max().reset_index() # max aqui é aproximado se unique por chunk, melhor re-agrupar unique IDs
+        
+        # Método mais preciso com chunks: coletar pares (ano, estação) únicos
+    else:
+        resumo_final = pd.DataFrame(columns=['ano', 'CD_ESTACAO'])
+
+    # Recalculando resumo de forma mais precisa se memória permitir, ou simplificada:
+    # Como o arquivo pode ser grande (20 anos * 365 dias * N estações), melhor não carregar tudo.
+    # Mas quantos dados validos vamos ter? provavelmente cabe na memória.
+    # Vamos tentar ler apenas colunas chave de linhas validas
+    
+    del resumo_list 
+    
+    # Re-leitura otimizada para tabela
+    estacoes_por_ano = {}
+    for chunk in pd.read_csv(ARQUIVO_DADOS_BRUTOS, usecols=['data', 'CD_ESTACAO', 'ITU_MED_INMET'], chunksize=50000):
+        chunk = chunk.dropna(subset=['ITU_MED_INMET'])
+        if not chunk.empty:
+            chunk['ano'] = pd.to_datetime(chunk['data']).dt.year
+            for ano, grupo in chunk.groupby('ano'):
+                unique_est = set(grupo['CD_ESTACAO'].unique())
+                if ano in estacoes_por_ano:
+                    estacoes_por_ano[ano].update(unique_est)
+                else:
+                    estacoes_por_ano[ano] = unique_est
+                    
+    df_resumo_tabela = pd.DataFrame([
+        {'Ano': ano, 'Quantidade de Estações': len(estacoes)} 
+        for ano, estacoes in sorted(estacoes_por_ano.items())
+    ])
+    
+    from IPython.display import display, Markdown
+    display(Markdown("### Tabela 1: Quantidade de Estações Automáticas Ativas em Goiás por Ano (2004-2024)"))
+    display(df_resumo_tabela)
+else:
+    print("Arquivo de dados não encontrado para gerar resumo.")
+```
+
+## Próximos Passos
+
+Os dados gerados (`dados/itu_bruto/itu_inmet_diario_bruto.csv`) contêm as medições históricas de temperatura e umidade, juntamente com o ITU calculado. As colunas referentes ao NASA POWER encontram-se vazias e serão preenchidas na próxima etapa do projeto para fins de calibração.
