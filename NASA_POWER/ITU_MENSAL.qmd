@@ -1,0 +1,119 @@
+---
+title: "Agregação Mensal e Preparação para o QGIS"
+format: html
+editor: source
+jupyter: python3
+execute:
+  warning: false
+  message: false
+---
+
+## Introdução
+
+Este relatório descreve a etapa final de processamento dos dados do Índice de Temperatura e Umidade (ITU) para o estado de Goiás. O objetivo é agregar os dados diários (já preenchidos na etapa anterior) em médias mensais e preparar um arquivo espacial (GeoPackage) para uso no QGIS.
+
+Nesta etapa, focaremos exclusivamente no **ITU Médio**.
+
+## Metodologia
+
+1.  **Carregamento:** Importar os dados diários processados (`itu_diario_processado.csv`).
+2.  **Filtragem e Seleção:** Selecionar apenas as colunas relevantes para o ITU Médio Ajustado (`ITU_MED_FINAL`).
+3.  **Agrupamento Mensal:** Calcular a média do ITU para cada mês de cada ano, por estação.
+4.  **Exportação Tabular:** Salvar os dados mensais em CSV para conferência.
+5.  **Criação de GeoDataFrame:** Transformar as coordenadas das estações em geometrias de ponto.
+6.  **Exportação GeoEspacial:** Salvar os dados como uma camada vetorial em formato GeoPackage (`.gpkg`), pronta para interpolação espacial (IDW) no QGIS.
+
+## Processamento dos Dados
+
+```{python}
+import pandas as pd
+import geopandas as gpd
+from shapely.geometry import Point
+import os
+
+# Caminhos dos arquivos
+INPUT_FILE = "../dados/itu_processado/itu_diario_processado.csv"
+OUTPUT_CSV_MENSAL = "../dados/itu_processado/itu_ajustado_medio_mensal.csv"
+OUTPUT_GPKG = "../dados/itu_processado/estacoes_itu_mensal.gpkg"
+
+# Garantir diretório de saída
+os.makedirs(os.path.dirname(OUTPUT_CSV_MENSAL), exist_ok=True)
+
+# 1. Carregar dados diários processados
+try:
+    df = pd.read_csv(INPUT_FILE)
+    df['data'] = pd.to_datetime(df['data'])
+    print(f"Dados diários carregados. Total de registros: {len(df)}")
+except FileNotFoundError:
+    print(f"ERRO: Arquivo de entrada não encontrado: {INPUT_FILE}")
+    raise
+
+# 2. Preparar para agrupamento
+# Criar colunas de Ano e Mês
+df['ano'] = df['data'].dt.year
+df['mes'] = df['data'].dt.month
+
+# 3. Agrupamento Mensal (Calculando a média do ITU_MED_FINAL)
+# Agrupamos por Estação, Ano e Mês. Mantemos lat/lon (assumindo que são constantes por estação)
+# Usamos 'first' para lat/lon e coordenadas, e 'mean' para o ITU
+agg_dict = {
+    'ITU_MED_FINAL': 'mean',
+    'VL_LATITUDE': 'first',
+    'VL_LONGITUDE': 'first',
+    'FONTE_ITU_MED': lambda x: pd.Series.mode(x)[0] if not x.mode().empty else 'MISTO' # Moda da fonte (opcional, informativo)
+}
+
+df_mensal = df.groupby(['CD_ESTACAO', 'ano', 'mes']).agg(agg_dict).reset_index()
+
+# Renomear coluna para ficar claro que é mensal
+df_mensal.rename(columns={'ITU_MED_FINAL': 'ITU_MED_MENSAL'}, inplace=True)
+
+# Arredondar para 2 casas decimais
+df_mensal['ITU_MED_MENSAL'] = df_mensal['ITU_MED_MENSAL'].round(2)
+
+print(f"Total de registros mensais gerados: {len(df_mensal)}")
+
+# 4. Salvar CSV Mensal
+df_mensal.to_csv(OUTPUT_CSV_MENSAL, index=False)
+print(f"Arquivo CSV mensal salvo em: {OUTPUT_CSV_MENSAL}")
+
+# 5. Criação do GeoDataFrame para o QGIS
+# Remover registros sem ITU (caso exista algum mês vazio, o que não deve ocorrer se o preenchimento diário foi completo)
+df_validos = df_mensal.dropna(subset=['ITU_MED_MENSAL']).copy()
+
+if len(df_validos) < len(df_mensal):
+    print(f"Aviso: {len(df_mensal) - len(df_validos)} registros removidos por falta de dados de ITU.")
+
+# Criar geometria de pontos
+geometry = [Point(xy) for xy in zip(df_validos['VL_LONGITUDE'], df_validos['VL_LATITUDE'])]
+
+# Criar GeoDataFrame (SIRGAS 2000 - EPSG:4674 é o padrão do IBGE/INMET, mas QGIS usa 4326 com facilidade.
+# O user mentionou 4326 no exemplo, vamos usar 4674 pois é o nativo dos dados brasileiros ou 4326 padrão GPS.
+# O exemplo usava 4326. Vamos manter 4674 (SIRGAS) se a origem for essa, ou 4326. 
+# As coordenadas do INMET geralmente são WGS84 ou SIRGAS. Como a diferença é mínima, 4674 é mais adequado ao Brasil.
+# Mas para evitar confusão com o exemplo do usuário, vou usar 4326 (WGS84) que é universal.
+gdf = gpd.GeoDataFrame(df_validos, geometry=geometry, crs="EPSG:4326")
+
+# 6. Salvar em GeoPackage
+# O arquivo será salvo na pasta dados/itu_processado para organização, mas pode ser carregado no QGIS.
+try:
+    gdf.to_file(OUTPUT_GPKG, layer='itu_medio_mensal', driver="GPKG")
+    print(f"Arquivo GeoPackage salvo com sucesso em: {OUTPUT_GPKG}")
+except Exception as e:
+    print(f"Erro ao salvar GeoPackage: {e}")
+
+```
+
+## Visualização dos Dados Processados
+
+Uma amostra dos dados mensais agregados prontos para o QGIS.
+
+```{python}
+from IPython.display import display, Markdown
+
+display(Markdown("### Amostra dos Dados Mensais (ITU Médio)"))
+display(df_mensal.head(10))
+
+display(Markdown("### Resumo Estatístico do ITU Médio Mensal"))
+display(df_mensal['ITU_MED_MENSAL'].describe().to_frame().T)
+```
