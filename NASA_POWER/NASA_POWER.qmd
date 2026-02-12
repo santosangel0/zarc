@@ -1,0 +1,206 @@
+---
+title: "Aquisição de Dados NASA POWER para Estações INMET em Goiás"
+format: html
+editor: source
+jupyter: python3
+execute:
+  warning: false
+  message: false
+---
+
+## Introdução
+
+Este documento descreve a metodologia e o código utilizados para obter dados meteorológicos da API NASA POWER para complementar as séries temporais das estações automáticas do INMET no estado de Goiás.
+
+O objetivo é preencher as lacunas dos dados observados e obter variáveis correspondentes (Temperatura e Umidade) para posterior calibração do Índice de Temperatura e Umidade (ITU).
+
+## Configuração Inicial
+
+Carregamento das bibliotecas e definição dos caminhos dos arquivos.
+
+```{python}
+import pandas as pd
+import requests
+import time
+import os
+import numpy as np
+import json
+from datetime import datetime
+
+# Caminhos dos arquivos
+INPUT_FILE = "../dados/itu_bruto/itu_inmet_diario_bruto.csv"
+OUTPUT_FILE = "../dados/itu_bruto/itu_nasa_inmet_diario_bruto.csv"
+
+# Configuração da API NASA POWER
+BASE_URL = "https://power.larc.nasa.gov/api/temporal/daily/point"
+
+# Parâmetros da API
+# T2M: Temperature at 2 Meters (°C)
+# T2M_MAX: Maximum Temperature at 2 Meters (°C)
+# RH2M: Relative Humidity at 2 Meters (%)
+PARAMS = "T2M,T2M_MAX,RH2M" 
+
+# Função para verificar se o arquivo de saída já existe e carregar dados processados
+def carregar_progresso():
+    if os.path.exists(OUTPUT_FILE):
+        print(f"Arquivo de saída encontrado: {OUTPUT_FILE}")
+        # Ler apenas colunas chave para identificar o que já foi processado
+        # Chave composta: CD_ESTACAO + ano (ou CD_ESTACAO se processarmos tudo de uma vez)
+        # Como a API do NASA POWER é por ponto, vamos verificar por estação
+        try:
+            df_existente = pd.read_csv(OUTPUT_FILE)
+            estacoes_processadas = df_existente[df_existente['T2M_NASA'].notna()]['CD_ESTACAO'].unique()
+            return df_existente, set(estacoes_processadas)
+        except Exception as e:
+            print(f"Erro ao ler arquivo existente: {e}")
+            return None, set()
+    else:
+        print("Arquivo de saída não encontrado. Iniciando a partir do input original.")
+        if os.path.exists(INPUT_FILE):
+             return pd.read_csv(INPUT_FILE), set()
+        else:
+            raise FileNotFoundError(f"Arquivo de entrada não encontrado: {INPUT_FILE}")
+
+# Carregar dados
+df_dados, estacoes_concluidas = carregar_progresso()
+
+# Garantir que as colunas NASA existam e sejam float
+colunas_nasa = ['T2M_NASA', 'T2M_MAX_NASA', 'RH2M_NASA', 'ITU_MED_NASA', 'ITU_MAX_NASA']
+for col in colunas_nasa:
+    if col not in df_dados.columns:
+        df_dados[col] = np.nan
+    else:
+        df_dados[col] = df_dados[col].astype(float)
+
+print(f"Total de registros: {len(df_dados)}")
+print(f"Estações já processadas com dados NASA: {len(estacoes_concluidas)}")
+```
+
+## Coleta dos Dados NASA POWER
+
+A API do NASA POWER fornece dados diários para um ponto específico. Faremos requisições para cada estação única, solicitando todo o período de interesse (2004-2024), e preencheremos o DataFrame principal.
+
+A estratégia será: 1. Identificar estações únicas no arquivo. 2. Para cada estação não processada: a. Solicitar dados de 2004 a 2024 numa única requisição (ou em blocos se necessário, mas a API suporta longos períodos). b. Processar o JSON de resposta. c. Atualizar as colunas NASA no DataFrame principal para aquela estação. d. Salvar o arquivo CSV incrementalmente para evitar perda de dados. e. Aguardar um delay para respeitar limites da API.
+
+```{python}
+# Lista de estações únicas
+estacoes_unicas = df_dados[['CD_ESTACAO', 'VL_LATITUDE', 'VL_LONGITUDE']].drop_duplicates()
+
+# Converter a coluna de data para datetime no DataFrame principal ANTES do loop
+# Isso evita problemas de tipos mistos (string/datetime) na mesma coluna
+df_dados['data'] = pd.to_datetime(df_dados['data'], errors='coerce')
+
+# Loop pelas estações
+for index, row in estacoes_unicas.iterrows():
+    cod_estacao = row['CD_ESTACAO']
+    lat = row['VL_LATITUDE']
+    lon = row['VL_LONGITUDE']
+    
+    if cod_estacao in estacoes_concluidas:
+        # print(f"Estação {cod_estacao} já processada. Pulando...")
+        continue
+    
+    print(f"Processando estação {cod_estacao} (Lat: {lat}, Lon: {lon})...")
+    
+    # Definir período: 20040101 a 20241231
+    start_date = "20040101"
+    end_date = "20241231"
+    
+    request_url = f"{BASE_URL}?parameters={PARAMS}&community=AG&longitude={lon}&latitude={lat}&start={start_date}&end={end_date}&format=JSON"
+    
+    try:
+        response = requests.get(request_url, timeout=60)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Extrair séries temporais
+            properties = data.get('properties', {}).get('parameter', {})
+            
+            t2m_series = properties.get('T2M', {})
+            t2m_max_series = properties.get('T2M_MAX', {})
+            rh2m_series = properties.get('RH2M', {})
+            
+            # Criar DataFrame temporário para os dados da estação
+            # As chaves são 'YYYYMMDD'
+            dates = sorted(t2m_series.keys())
+            
+            # Garantir que dates sejam strings
+            dates = [str(d) for d in dates]
+            
+            df_temp = pd.DataFrame({
+                'data_str': dates,
+                'T2M_NASA': [t2m_series.get(d, -999) for d in dates],
+                'T2M_MAX_NASA': [t2m_max_series.get(d, -999) for d in dates],
+                'RH2M_NASA': [rh2m_series.get(d, -999) for d in dates]
+            })
+            
+            # Converter data e tratar missing values (-999 no NASA POWER)
+            df_temp['data'] = pd.to_datetime(df_temp['data_str'], format='%Y%m%d')
+            
+            # Substituir -999 por NaN
+            for col in ['T2M_NASA', 'T2M_MAX_NASA', 'RH2M_NASA']:
+                df_temp[col] = df_temp[col].replace(-999, np.nan)
+            
+            # Calcular ITU NASA
+            # ITU = 0.8 * Tbs + UR * (Tbs - 14.3)/100 + 46.3
+            df_temp['ITU_MED_NASA'] = 0.8 * df_temp['T2M_NASA'] + (df_temp['RH2M_NASA'] * (df_temp['T2M_NASA'] - 14.3))/100 + 46.3
+            
+            # ITU Máximo
+            df_temp['ITU_MAX_NASA'] = 0.8 * df_temp['T2M_MAX_NASA'] + (df_temp['RH2M_NASA'] * (df_temp['T2M_MAX_NASA'] - 14.3))/100 + 46.3
+
+            # Atualizar DataFrame Principal
+            
+            # Índices das linhas da estação atual
+            mask_estacao = df_dados['CD_ESTACAO'] == cod_estacao
+            
+            # Mapear valores
+            # Um dicionario (data -> valor) é rápido
+            dict_t2m = df_temp.set_index('data')['T2M_NASA'].to_dict()
+            dict_t2m_max = df_temp.set_index('data')['T2M_MAX_NASA'].to_dict()
+            dict_rh2m = df_temp.set_index('data')['RH2M_NASA'].to_dict()
+            dict_itu_med = df_temp.set_index('data')['ITU_MED_NASA'].to_dict()
+            dict_itu_max = df_temp.set_index('data')['ITU_MAX_NASA'].to_dict()
+            
+            # Função apply é lenta. Map é vetorizado.
+            # Como ambos (df_dados['data'] e chaves do dict) são datetime, o map deve funcionar corretamente
+            df_dados.loc[mask_estacao, 'T2M_NASA'] = df_dados.loc[mask_estacao, 'data'].map(dict_t2m)
+            df_dados.loc[mask_estacao, 'T2M_MAX_NASA'] = df_dados.loc[mask_estacao, 'data'].map(dict_t2m_max)
+            df_dados.loc[mask_estacao, 'RH2M_NASA'] = df_dados.loc[mask_estacao, 'data'].map(dict_rh2m)
+            df_dados.loc[mask_estacao, 'ITU_MED_NASA'] = df_dados.loc[mask_estacao, 'data'].map(dict_itu_med)
+            df_dados.loc[mask_estacao, 'ITU_MAX_NASA'] = df_dados.loc[mask_estacao, 'data'].map(dict_itu_max)
+            
+            # Adicionar à lista de concluidos
+            estacoes_concluidas.add(cod_estacao)
+            
+            # Salvar Progresso (Sobrescrever arquivo inteiro é seguro mas lento. Vamos fazer a cada iteração para garantir)
+            df_dados.to_csv(OUTPUT_FILE, index=False)
+            print(f"Estação {cod_estacao} salva com sucesso.")
+            
+        else:
+            print(f"Erro na requisição para {cod_estacao}: Status {response.status_code}")
+            
+    except Exception as e:
+        print(f"Erro ao processar estação {cod_estacao}: {e}")
+    
+    # Delay para a API (NASA POWER limit: check docs, usually fine but good practice)
+    time.sleep(1.5)
+
+print("Processamento concluído para todas as estações.")
+```
+
+## Validação
+
+Breve visualização dos dados preenchidos para garantir que as colunas NASA não estão mais vazias para as estações processadas.
+
+```{python}
+# Verificar amostra
+print(df_dados[['data', 'CD_ESTACAO', 'ITU_MED_INMET', 'ITU_MED_NASA']].dropna().head(10))
+
+# Verificar quantidade de nulos
+nulos_nasa = df_dados['ITU_MED_NASA'].isna().sum()
+total = len(df_dados)
+print(f"Total de registros: {total}")
+print(f"Registros com NASA ITU preenchido: {total - nulos_nasa}")
+print(f"Cobertura: {((total - nulos_nasa)/total)*100:.2f}%")
+```
