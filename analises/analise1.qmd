@@ -1,0 +1,283 @@
+---
+title: "Análise 1: Metodologia e Manipulação de Dados Climáticos e de Vegetação em Goiás"
+format:
+  html:
+    code-fold: true
+    toc: true
+jupyter: python3
+editor: source
+---
+
+## 1. Introdução
+
+Esta análise tem como objetivo investigar a relação entre variáveis climáticas (ITU e PDSI) e a resposta da vegetação (NDVI) em áreas de pastagem no estado de Goiás, Brasil, ao longo de uma série temporal de 21 anos (2004 a 2024).
+
+A hipótese central é que o Índice de Temperatura e Umidade (ITU), que reflete o estresse térmico animal, e o Índice de Severidade de Seca de Palmer (PDSI), que reflete a disponibilidade hídrica acumulada, influenciam diretamente o vigor das pastagens (NDVI), impactando a produção leiteira.
+
+## 2. Metodologia
+
+A metodologia adotada consiste em uma **análise temporal pixel a pixel** e uma análise agregada espacialmente para as áreas de pastagem.
+
+### 2.1. Área de Estudo e Período
+- **Local:** Estado de Goiás, Brasil.
+- **Filtro Espacial:** Apenas pixels classificados como **Pastagem (Classe 15)** pelo MapBiomas (Coleção 10).
+- **Período:** Janeiro de 2004 a Dezembro de 2024 (21 anos).
+
+### 2.2. Dados Utilizados
+
+| Variável | Fonte | Resolução Original | Processamento |
+|----------|-------|--------------------|---------------|
+| **ITU** (Índice de Temperatura e Umidade) | Interpolado (IDW) de estações INMET | ~1km (estimado) | Recortado para Goiás. |
+| **PDSI** (Palmer Drought Severity Index) | TerraClimate (Google Earth Engine) | ~4.6km (1/24 grau) | Mensal. Lags de 0 a 3 meses serão calculados. |
+| **NDVI** (Normalized Difference Vegetation Index) | MODIS/Terra (ou similar via GEE) | 250m/500m/1km | Mensal. |
+| **Máscara de Pastagem** | MapBiomas Coleção 10 (via GEE) | 30m (nativo) | Reamostrado na exportação para ~4.6km para alinhar com PDSI. |
+
+### 2.3. Fluxo de Processamento de Dados
+
+O processamento dos dados seguirá as seguintes etapas computacionais:
+
+1.  **Padronização Espacial (Resampling):** 
+    Como as fontes de dados possuem resoluções espaciais diferentes, todas as camadas serão reamostradas para uma grade comum. A grade de referência será a do **PDSI (TerraClimate)** ou a do **ITU**, garantindo que cada pixel em uma matriz corresponda geograficamente ao mesmo pixel nas outras matrizes.
+    
+2.  **Mascaramento Anual de Pastagens:**
+    Para cada ano da série (2004-2024), será utilizada a máscara de pastagem específica daquele ano (MapBiomas). Isso evita erros associados à mudança de uso do solo (ex: áreas que eram pastagem e viraram agricultura).
+    
+    *Lógica:* `Pixel_Válido = (Pixel_Classe == 15)`
+
+3.  **Extração de Médias Mensais (Agregação Espacial):**
+    Para gerar uma visão geral da série temporal e permitir análises de correlação temporal agregada (ex: scatterplots), calcularemos a média dos valores de ITU, PDSI e NDVI apenas para os pixels válidos de pastagem em cada mês.
+
+4.  **Cálculo de Lags (Defasagem Temporal):**
+    Serão geradas colunas adicionais para o PDSI com defasagens de 1, 2 e 3 meses (Lag-1, Lag-2, Lag-3), considerando que a resposta da vegetação à seca pode não ser imediata.
+
+## 3. Implementação em Python
+
+Abaixo, o código Python para carregar, alinhar e processar os dados.
+
+### 3.1. Bibliotecas e Configurações
+
+```{python}
+import os
+import glob
+import numpy as np
+import pandas as pd
+import rasterio
+import rasterio.warp
+from rasterio.enums import Resampling
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+
+# Configuração de caminhos (ajuste conforme necessário)
+BASE_DIR = os.path.join('..', 'dados')
+ITU_DIR = os.path.join(BASE_DIR, 'itu_processado', 'tif')
+GEE_DIR = os.path.join(BASE_DIR, 'geo_gee', 'mensal')
+MAPBIOMAS_DIR = os.path.join(BASE_DIR, 'mapbiomas')
+
+# Verificar se os diretórios existem
+for path in [ITU_DIR, GEE_DIR, MAPBIOMAS_DIR]:
+    if not os.path.exists(path):
+        print(f"ALERTA: Diretório não encontrado: {path}")
+    else:
+        print(f"Diretório OK: {path}")
+```
+
+### 3.2. Funções de Auxílio
+
+Função para reamostrar um raster para coincidir com a grade de um raster de referência (ex: PDSI).
+
+```{python}
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+
+def read_and_resample(target_path, reference_profile):
+    """
+    Lê um arquivo TIFF alvo e o reamostra para corresponder ao perfil (transform, width, height, crs) de referência.
+    Trata valores NoData convertendo-os para np.nan.
+    """
+    with rasterio.open(target_path) as src:
+        # Calcular limites da referência
+        left, bottom, right, top = rasterio.transform.array_bounds(
+            reference_profile['height'], 
+            reference_profile['width'], 
+            reference_profile['transform']
+        )
+
+        # Calcular a transformação para a nova resolução
+        transform, width, height = calculate_default_transform(
+            src.crs, reference_profile['crs'], 
+            reference_profile['width'], reference_profile['height'], 
+            left, bottom, right, top
+        )
+        
+        # Array de destino preenchido com NaN
+        destination = np.full((height, width), np.nan, dtype=np.float32)
+        
+        # Definir NoData do arquivo de origem (se não houver, assumir None ou um valor padrão se soubermos)
+        src_nodata = src.nodata
+        
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=destination,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=src_nodata,
+            dst_transform=reference_profile['transform'],
+            dst_crs=reference_profile['crs'],
+            dst_nodata=np.nan, # Converter NoData para NaN no destino
+            resampling=Resampling.bilinear
+        )
+        
+        # Filtro de segurança: Remover artefatos de interpolação de NoData
+        # Como o ITU é positivo, PDSI > -20 e NDVI > -1, valores muito negativos (< -100) são certamente ruído/NoData.
+        # Isso corrige casos onde a interpolação suaviza um -9999 para algo como -5000, que não é capturado como NaN.
+        destination[destination < -100] = np.nan
+        
+    return destination
+
+def read_mask_resample(mask_path, reference_profile):
+    """
+    Similar ao anterior, mas usando vizinho mais próximo (nearest) para máscaras categóricas (0 ou 1).
+    """
+    with rasterio.open(mask_path) as src:
+        destination = np.zeros((reference_profile['height'], reference_profile['width']), dtype=np.uint8)
+        
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=destination,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=reference_profile['transform'],
+            dst_crs=reference_profile['crs'],
+            resampling=Resampling.nearest # Vizinho mais próximo para preservar 0s e 1s
+        )
+    return destination
+```
+
+### 3.3. Iteração e Processamento
+
+O script abaixo itera mês a mês, carrega os rasters, aplica a máscara do ano correspondente e extrai as médias.
+
+```{python}
+# Lista para armazenar os dados médios mensais
+dados_agregados = []
+
+# Definir o período de análise
+anos = list(range(2004, 2025))
+meses = list(range(1, 13))
+
+# Vamos usar o primeiro arquivo de PDSI como referência espacial para o grid
+ref_pdsi = glob.glob(os.path.join(GEE_DIR, "PDSI_*.tif"))[0]
+with rasterio.open(ref_pdsi) as src:
+    ref_profile = src.profile.copy()
+    print(f"Perfil de Referência (baseado em {os.path.basename(ref_pdsi)}):")
+    print(f"CRS: {ref_profile['crs']}, Tamanho: {ref_profile['width']}x{ref_profile['height']}")
+
+# Cache para a máscara de pastagem (para não recarregar se o ano não mudou)
+current_year_mask = None
+mask_year = -1
+mask_array = None
+
+for ano in tqdm(anos, desc="Processando Anos"):
+    # Carregar máscara de pastagem do ano
+    if mask_year != ano:
+        mask_path = os.path.join(MAPBIOMAS_DIR, f"pastagem_go_{ano}.tif")
+        if os.path.exists(mask_path):
+            mask_array = read_mask_resample(mask_path, ref_profile)
+            mask_year = ano
+        else:
+            print(f"Máscara não encontrada para {ano}: {mask_path}")
+            continue
+
+    for mes in meses:
+        # Construir caminhos dos arquivos
+        # Preste atenção nos padrões de nome dos arquivos
+        pdsi_path = os.path.join(GEE_DIR, f"PDSI_{ano}_{mes:02d}.tif")
+        ndvi_path = os.path.join(GEE_DIR, f"NDVI_{ano}_{mes:02d}.tif")
+        itu_path = os.path.join(ITU_DIR, f"itu_{ano}_{mes:02d}_final.tif")
+        
+        # Verificar existência
+        if not (os.path.exists(pdsi_path) and os.path.exists(ndvi_path) and os.path.exists(itu_path)):
+            # Tentar padrão alternativo para ITU se necessário (ex: temp_...) ou logs de erro
+            # print(f"Arquivos faltando para {ano}-{mes:02d}")
+            continue
+            
+        try:
+            # Carregar e alinhar dados
+            pdsi_data = read_and_resample(pdsi_path, ref_profile)
+            ndvi_data = read_and_resample(ndvi_path, ref_profile)
+            itu_data = read_and_resample(itu_path, ref_profile)
+            
+            # Aplicar máscara de pastagem
+            # A máscara deve ser 1 para pastagem. Se o MapBiomas raw for 15, aqui assumimos que já foi convertido para 0/1 no download ou ajustamos.
+            # Baseado na conversa anterior, o arquivo baixado já usou .eq(15), então é binário (0/1).
+            
+            # Máscara booleana onde pastagem=1 E dados válidos (não-NaN/NoData)
+            valid_pixels = (mask_array == 1) & \
+                           (~np.isnan(pdsi_data)) & \
+                           (~np.isnan(ndvi_data)) & \
+                           (~np.isnan(itu_data))
+            
+            if np.sum(valid_pixels) > 0:
+                mean_pdsi = np.mean(pdsi_data[valid_pixels])
+                mean_ndvi = np.mean(ndvi_data[valid_pixels])
+                mean_itu = np.mean(itu_data[valid_pixels])
+                
+                dados_agregados.append({
+                    'ano': ano,
+                    'mes': mes,
+                    'data': pd.Timestamp(year=ano, month=mes, day=1),
+                    'pdsi_medio': mean_pdsi,
+                    'ndvi_medio': mean_ndvi,
+                    'itu_medio': mean_itu,
+                    'pixels_validos': np.sum(valid_pixels)
+                })
+        except Exception as e:
+            print(f"Erro processando {ano}-{mes:02d}: {e}")
+
+# Criar DataFrame
+df_resultados = pd.DataFrame(dados_agregados)
+print(f"Processamento concluído. {len(df_resultados)} meses processados.")
+```
+
+### 3.4. Exibição dos Primeiros Resultados
+
+```{python}
+if not df_resultados.empty:
+    print(df_resultados.head())
+    
+    # Salvar CSV intermediário
+    output_csv = os.path.join('..', 'dados', 'analise1_medias_pastagem_goias.csv')
+    df_resultados.to_csv(output_csv, index=False)
+    print(f"Dados salvos em: {output_csv}")
+else:
+    print("Nenhum dado foi processado.")
+```
+
+### 3.5. Próximos Passos (Visualização Inicial)
+
+Com o DataFrame gerado, podemos visualizar as séries temporais.
+
+```{python}
+if not df_resultados.empty:
+    plt.figure(figsize=(14, 8))
+    
+    plt.subplot(3, 1, 1)
+    sns.lineplot(data=df_resultados, x='data', y='itu_medio', color='red')
+    plt.title('Média Mensal de ITU em Pastagens de Goiás (2004-2024)')
+    
+    plt.subplot(3, 1, 2)
+    sns.lineplot(data=df_resultados, x='data', y='pdsi_medio', color='blue')
+    plt.title('Média Mensal de PDSI em Pastagens de Goiás (2004-2024)')
+    plt.axhline(0, color='gray', linestyle='--') # Linha de referência seca/úmido
+    
+    plt.subplot(3, 1, 3)
+    sns.lineplot(data=df_resultados, x='data', y='ndvi_medio', color='green')
+    plt.title('Média Mensal de NDVI em Pastagens de Goiás (2004-2024)')
+    
+    plt.tight_layout()
+    plt.show()
+```
+
+## 4. Conclusão Parcial
+
+Este documento estabeleceu a base metodológica para alinhar as matrizes de dados climáticos e de vegetação, respeitando a dinâmica de uso do solo (máscara anual de pastagem). Os dados agregados gerados aqui permitirão a análise de correlação temporal e a identificação de lags na próxima etapa.
