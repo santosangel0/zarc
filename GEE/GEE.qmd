@@ -18,6 +18,24 @@ O objetivo é duplo:
 
 O período de análise compreende de **Janeiro de 2004 a Dezembro de 2024**.
 
+## Metodologia e Dados
+
+Foram utilizados os seguintes produtos de sensoriamento remoto disponíveis no catálogo do Google Earth Engine:
+
+1.  **NDVI (Índice de Vegetação da Diferença Normalizada)**:
+    *   **Produto**: MOD13Q1 V6.1 (Vegetation Indices 16-Day Global 250m).
+    *   **Resolução Espacial**: 250 metros.
+    *   **Resolução Temporal**: Composições de 16 dias.
+    *   **Processamento**: Para obter estimativas mensais, calculou-se a média de todas as imagens disponíveis dentro de cada mês calendário.
+    *   **Delimitador**: As imagens foram recortadas utilizando os limites do estado de Goiás.
+
+2.  **PDSI (Palmer Drought Severity Index)**:
+    *   **Produto**: TerraClimate (Monthly Climate and Climatic Water Balance for Global Terrestrial Surfaces).
+    *   **Resolução Espacial**: ~4.6 km (2.5 arc minutes).
+    *   **Resolução Temporal**: Mensal.
+    *   **Processamento**: Os dados mensais originais foram utilizados e recortados para a área de estudo.
+
+
 ## Configuração do Ambiente
 
 ```{python}
@@ -160,10 +178,75 @@ def exportar_imagens(collection, prefixo, scale):
 # O user pediu para uso em artigo e regressão.
 # Vamos usar 2500m (2.5km) como compromisso bom.
 
-exportar_imagens(ndvi_clim, "NDVI_Climatologia", 2500)
-exportar_imagens(pdsi_clim, "PDSI_Climatologia", 4000) # TerraClimate nativo é ~4km
+# Exportação Climatologia comentada para focar na série mensal
+# exportar_imagens(ndvi_clim, "NDVI_Climatologia", 2500)
+# exportar_imagens(pdsi_clim, "PDSI_Climatologia", 4000) 
 
-print("Código de exportação preparado (comentado para evitar download em massa durante renderização).")
+print("Código de exportação de climatologia preparado (comentado).")
+```
+
+## Exportação da Série Histórica Mensal (2004-2024)
+
+O script abaixo exporta os GeoTIFFs individuais para cada mês da série histórica, de Janeiro de 2004 a Dezembro de 2024.
+
+```{python}
+import calendar
+
+# Diretório para séries mensais
+OUTPUT_DIR_MENSAL = os.path.join(OUTPUT_DIR, "mensal")
+os.makedirs(OUTPUT_DIR_MENSAL, exist_ok=True)
+
+def exportar_serie_mensal(collection, nome_var, scale, start_year, end_year):
+    print(f"Iniciando exportação da série mensal para {nome_var}...")
+    
+    for year in range(start_year, end_year + 1):
+        for month in range(1, 13):
+            # Define o início e fim do mês
+            start_date_month = ee.Date.fromYMD(year, month, 1)
+            end_date_month = start_date_month.advance(1, 'month')
+            
+            # Filtra a coleção para o mês específico
+            img_mensal = collection.filterDate(start_date_month, end_date_month).mean()
+
+            # Verifica se há dados na imagem (bandas)
+            # Para evitar erros em meses sem dados (embora MODIS/TerraClimate sejam contínuos)
+            # Adiciona metadados de data para garantir consistência
+            img_mensal = img_mensal.set('year', year).set('month', month).clip(goias)
+            
+            # Nome do arquivo
+            nome_arquivo = f"{nome_var}_{year}_{month:02d}.tif"
+            caminho_completo = os.path.join(OUTPUT_DIR_MENSAL, nome_arquivo)
+            
+            # Verifica se já existe para não reprocessar (opcional)
+            if os.path.exists(caminho_completo):
+               # print(f"Arquivo {nome_arquivo} já existe. Pulando.")
+               continue
+            
+            try:
+                # print(f"Exportando {nome_arquivo}...")
+                geemap.ee_export_image(
+                    img_mensal, 
+                    filename=caminho_completo, 
+                    scale=scale, 
+                    region=goias.geometry(), 
+                    file_per_band=False
+                )
+            except Exception as e:
+                print(f"Erro ao exportar {nome_arquivo}: {e}")
+
+# Executar exportação da série histórica
+# Aviso: Isso fará o download de centenas de arquivos.
+# Pode demorar consideravelmente.
+
+# MODIS NDVI Mensal (Agregado) - Exportando a 2500m para otimizar tamanho/tempo
+# Se precisar de resolução nativa (250m), altere scale para 250.
+exportar_serie_mensal(ndvi_col, "NDVI", 2500, 2004, 2024)
+
+# TerraClimate PDSI Mensal - Nativo ~4000m
+exportar_serie_mensal(pdsi_col, "PDSI", 4000, 2004, 2024)
+
+print("Exportação da série mensal concluída.")
+
 ```
 
 ## Extração de Séries Temporais (Médias Estaduais)
