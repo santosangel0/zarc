@@ -249,9 +249,13 @@ print("Exportação da série mensal concluída.")
 
 ```
 
-## Extração de Séries Temporais (Médias Estaduais)
+## 4. Extração de Séries Temporais (Médias Estaduais)
 
-Além dos mapas estáticos (climatologia), extraímos a série temporal contínua (média espacial do estado mês a mês) para alimentar o modelo de regressão.
+Além dos mapas mensais exportados como imagens (GeoTIFF), é fundamental extrair a **série temporal numérica** (média espacial de todo o estado de Goiás, mês a mês).
+
+Este passo cria um arquivo CSV (`indices_climaticos_goias_mensal.csv`) contendo uma única linha por mês com os valores médios de NDVI e PDSI. Este arquivo tabular será a entrada principal para os modelos de regressão na etapa de análise (`analise2.qmd`), permitindo correlacionar o comportamento médio do clima/vegetação com a série histórica de preços do leite.
+
+A função abaixo realiza a redução espacial (`reduceRegion`) em cada imagem da coleção, calculando a média dos pixels dentro da geometria de Goiás.
 
 ```{python}
 # Função para reduzir região (Média Espacial)
@@ -288,4 +292,53 @@ df_final.to_csv(OUTPUT_CSV, index=False)
 print(f"Série temporal salva em: {OUTPUT_CSV}")
 from IPython.display import display
 display(df_final.head())
+```
+
+
+```{python}
+import ee
+
+# 1. Inicializar a API
+try:
+    ee.Initialize()
+except Exception as e:
+    ee.Authenticate()
+    ee.Initialize()
+
+# 2. Definir o recorte de Goiás (FAO/GAUL)
+states = ee.FeatureCollection("FAO/GAUL/2015/level1")
+goias = states.filter(ee.Filter.eq('ADM1_NAME', 'Goias'))
+
+# 3. Acessar a ImageCollection (conforme o ID do seu print)
+collection_id = 'projects/mapbiomas-public/assets/brazil/lulc/v1'
+col = ee.ImageCollection(collection_id)
+
+# 4. Lista de anos de 2004 até 2024
+anos = list(range(2004, 2025))
+
+for ano in anos:
+    # Filtra a imagem do ano específico
+    # Usamos o filtro de data ou a propriedade 'year'
+    mapa_ano = col.filter(ee.Filter.eq('year', ano)).first()
+    
+    # Criamos a máscara de pastagem (Classe 15)
+    # .select('classification') é o nome padrão da banda no MapBiomas
+    pasto_ano = mapa_ano.select('classification').clip(goias).eq(15)
+    
+    # Configuração da Exportação
+    task = ee.batch.Export.image.toDrive(
+        image=pasto_ano.byte(), 
+        description=f'Pastagem_GO_{ano}',
+        folder='MapBiomas_Leite_GO',
+        fileNamePrefix=f'pastagem_go_{ano}',
+        region=goias.geometry(),
+        scale=4600, # Resolução do TerraClimate (PDSI)
+        crs='EPSG:4326',
+        maxPixels=1e13
+    )
+    
+    task.start()
+    print(f"Tarefa enviada com sucesso: Ano {ano}")
+
+print("\nTodos os pedidos foram enviados. Verifique a aba 'Tasks' no Code Editor do GEE.")
 ```
